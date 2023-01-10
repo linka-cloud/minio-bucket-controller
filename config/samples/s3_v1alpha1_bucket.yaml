@@ -1,0 +1,13 @@
+apiVersion: s3.linka.cloud/v1alpha1
+kind: Bucket
+metadata:
+  labels:
+    app.kubernetes.io/name: bucket
+    app.kubernetes.io/instance: bucket-sample
+    app.kubernetes.io/part-of: minio-bucket-controller
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: minio-bucket-controller
+  name: bucket-sample
+spec:
+  reclaimPolicy: Delete
+  secretName: bucket-sample-creds
