@@ -1,87 +1,185 @@
 # minio-bucket-controller
 
-A simple controller to create buckets and user in Minio.
+A simple controller to create buckets and corresponding users in MinIO.
+
+**Note**: *The controller does not intend to be a replacement for the [COSI](https://container-object-storage-interface.github.io/) project.
+It is not as structured and does not have the same level of abstraction as the COSI.
+It is not meant to be a generic bucket controller, but rather a simple controller to create app buckets and users in MinIO.
+It covers a specific need: manage application's MinIO buckets and access lifecycle inside Kubernetes*
 
 ## Description
 
-This controller allows to manage buckets directly from Kubernetes.
+This controller allows to manage buckets directly from Kubernetes:
 
-When a new bucket resource is created, the corresponding minio bucket is created with a new user and an assigned policy that allows read/write access to the bucket only.
-Then a service account is created and associated to the user.
-The service account credentials are stored in a secret.
+```yaml
+apiVersion: s3.linka.cloud/v1alpha1
+kind: Bucket
+metadata:
+  labels:
+    app.kubernetes.io/name: bucket
+    app.kubernetes.io/instance: bucket-sample
+    app.kubernetes.io/part-of: minio-bucket-controller
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: minio-bucket-controller
+  name: bucket-sample
+spec:
+  reclaimPolicy: Delete
+  secretName: bucket-sample-creds
+```
+
+When a new bucket resource is created, the corresponding minio bucket is created 
+with a new user `bucket.s3.linka.cloud/bucket-sample` and an assigned policy that allows read/write access to the bucket only:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListAllMyBuckets",
+        "s3:GetBucketLocation",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::${BUCKET}"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:*"
+      ],
+      "Resource": [
+        "arn:aws:s3:::${BUCKET}/*"
+      ]
+    }
+  ]
+}
+```
+
+Then a service account is created for the user.
+The service account credentials are stored in a secret:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ${BUCKET}-bucket-credentials
+  namespace: $NAMESPACE
+stringData:
+  MINIO_ACCESS_KEY: $ACCESS_KEY
+  MINIO_SECRET_KEY: $SECRET_KEY
+  MINIO_ENDPOINT: $ENDPOINT
+  MINIO_BUCKET: $BUCKET
+  MINIO_SECURE: $SECURE
+```
+
+
 
 ## Getting Started
 You’ll need a Kubernetes cluster to run against. You can use [KIND](https://sigs.k8s.io/kind) to get a local cluster for testing, or run against a remote cluster.
 **Note:** Your controller will automatically use the current context in your kubeconfig file (i.e. whatever cluster `kubectl cluster-info` shows).
 
+### Preparation
+
+#### Create a MinIO Service Account for the controller
+
+You need to have a MinIO user with the right permissions (e.g. console admin) for the controller service account.
+
+If you don't have one, you can create one with the following command:
+
+```sh
+mc admin user add myminio myminio-admin myminio-password
+```
+
+Assign the policy `consoleAdmin` to the user:
+
+```sh
+mc admin policy set myminio consoleAdmin user=myminio-admin
+```
+
+Create the controller service account:
+
+```sh
+mc admin user svcacct add myminio myminio-admin
+
+Access Key: <ACCESS_KEY>
+Secret Key: <SECRET_KEY>
+```
+
+Create a `policy.json` file with the service account IAM definition:
+
+```shell
+cat <<EOF > policy.json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "admin:CreateUser",
+        "admin:DeleteUser",
+        "admin:ListUsers",
+        "admin:CreatePolicy",
+        "admin:DeletePolicy",
+        "admin:GetPolicy",
+        "admin:ListUserPolicies",
+        "admin:CreateServiceAccount",
+        "admin:UpdateServiceAccount",
+        "admin:RemoveServiceAccount",
+        "admin:ListServiceAccounts"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket",
+        "s3:DeleteBucket",
+        "s3:ForceDeleteBucket,
+        "s3:ListAllMyBuckets"
+      ],
+      "Resource": [
+        "arn:aws:s3:::*"
+      ]
+    }
+  ]
+}
+EOF
+
+Then assign the policy to the service account:
+
+```sh
+mc admin user svcacct edit myminio <ACCESS_KEY> --policy policy.json
+```
+
 ### Running on the cluster
-1. Install Instances of Custom Resources:
+
+#### Install Custom Resources and deploy the controller
 
 ```sh
-kubectl apply -f config/samples/
+kubectl apply -f https://raw.githubusercontent.com/linka-cloud/minio-bucket-controller/main/manifests.yaml
 ```
 
-2. Build and push your image to the location specified by `IMG`:
-	
-```sh
-make docker-build docker-push IMG=<some-registry>/minio-bucket-controller:tag
-```
-	
-3. Deploy the controller to the cluster with the image specified by `IMG`:
+The controller will not be created as it requires a secret named **minio-bucket-controller-credentials** with the MinIO credentials.
+
+Then create a secret with the credentials:
 
 ```sh
-make deploy IMG=<some-registry>/minio-bucket-controller:tag
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-bucket-controller-credentials
+  namespace: minio-bucket-controller-system
+stringData:
+  MINIO_ACCESS_KEY: <ACCESS_KEY>
+  MINIO_SECRET_KEY: <SECRET_KEY>
+  MINIO_ENDPOINT: myminio:9000
+  # uncomment if you don't use tls
+  # MINIO_INSECURE: "true"
+EOF
 ```
-
-### Uninstall CRDs
-To delete the CRDs from the cluster:
-
-```sh
-make uninstall
-```
-
-### Undeploy controller
-UnDeploy the controller to the cluster:
-
-```sh
-make undeploy
-```
-
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
-
-### How it works
-This project aims to follow the Kubernetes [Operator pattern](https://kubernetes.io/docs/concepts/extend-kubernetes/operator/)
-
-It uses [Controllers](https://kubernetes.io/docs/concepts/architecture/controller/) 
-which provides a reconcile function responsible for synchronizing resources untile the desired state is reached on the cluster 
-
-### Test It Out
-1. Install the CRDs into the cluster:
-
-```sh
-make install
-```
-
-2. Run your controller (this will run in the foreground, so switch to a new terminal if you want to leave it running):
-
-```sh
-make run
-```
-
-**NOTE:** You can also run this in one step by running: `make install run`
-
-### Modifying the API definitions
-If you are editing the API definitions, generate the manifests such as CRs or CRDs using:
-
-```sh
-make manifests
-```
-
-**NOTE:** Run `make --help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
-
 ## License
 
 Copyright 2023.

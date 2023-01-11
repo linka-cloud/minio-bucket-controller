@@ -8,3 +8,9 @@ spec:
     spec:
       containers:
       - name: manager
+        image: linkacloud/minio-bucket-controller:latest
+        imagePullPolicy: Always
+        envFrom:
+        - secretRef:
+            name: minio-bucket-controller-credentials
+

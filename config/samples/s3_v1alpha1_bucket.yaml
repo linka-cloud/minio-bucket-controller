@@ -8,6 +8,7 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
     app.kubernetes.io/created-by: minio-bucket-controller
   name: bucket-sample
+  namespace: default
 spec:
   reclaimPolicy: Delete
   secretName: bucket-sample-creds

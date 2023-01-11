@@ -56,7 +56,7 @@ type BucketReconciler struct {
 // +kubebuilder:rbac:groups=s3.linka.cloud,resources=buckets,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=s3.linka.cloud,resources=buckets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=s3.linka.cloud,resources=buckets/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -184,12 +184,10 @@ func (r *BucketReconciler) reconcilePolicy(ctx context.Context, bucket *s3v1alph
 		if bytes.Equal(got, want) {
 			return ctrl.Result{}, true, nil
 		}
-		log.Info("policy differs: deleting")
-		if err := r.MC.RemoveCannedPolicy(ctx, name); err != nil {
-			return ctrl.Result{}, false, fmt.Errorf("unable to remove policy: %w", err)
-		}
+		log.Info("policy differs: updating")
+	} else {
+		log.Info("creating policy")
 	}
-	log.Info("creating policy")
 	if err := r.MC.AddCannedPolicy(ctx, name, want); err != nil {
 		return ctrl.Result{}, false, fmt.Errorf("unable to add policy: %w", err)
 	}
@@ -300,7 +298,7 @@ func (r *BucketReconciler) reconcileDeletion(ctx context.Context, bucket *s3v1al
 		return ctrl.Result{}, true, nil
 	}
 	log.Info("deleting bucket")
-	if err := r.MC.RemoveBucket(ctx, bucket.Name); err != nil {
+	if err := r.MC.RemoveBucketWithOptions(ctx, bucket.Name, minio.RemoveBucketOptions{ForceDelete: true}); err != nil {
 		return ctrl.Result{}, false, fmt.Errorf("unable to remove bucket: %w", err)
 	}
 	r.Rec.Eventf(bucket, "BucketDeleted", "Bucket %s deleted", bucket.Name)
@@ -311,6 +309,7 @@ func (r *BucketReconciler) reconcileDeletion(ctx context.Context, bucket *s3v1al
 func (r *BucketReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&s3v1alpha1.Bucket{}).
+		Owns(&corev1.Secret{}).
 		Complete(r)
 }
 
