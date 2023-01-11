@@ -57,6 +57,7 @@ type BucketReconciler struct {
 // +kubebuilder:rbac:groups=s3.linka.cloud,resources=buckets/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=s3.linka.cloud,resources=buckets/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.

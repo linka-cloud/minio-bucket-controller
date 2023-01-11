@@ -103,9 +103,19 @@ Create the controller service account:
 
 ```sh
 mc admin user svcacct add myminio myminio-admin
+```
 
+```
 Access Key: <ACCESS_KEY>
 Secret Key: <SECRET_KEY>
+```
+
+Export the credentials as environment variables:
+
+```sh
+export MINIO_ACCESS_KEY="<ACCESS_KEY>"
+export MINIO_SECRET_KEY="<SECRET_KEY>"
+export MINIO_ENDPOINT="myminio:9000"
 ```
 
 Create a `policy.json` file with the service account IAM definition:
@@ -146,6 +156,7 @@ cat <<EOF > policy.json
   ]
 }
 EOF
+```
 
 Then assign the policy to the service account:
 
@@ -158,12 +169,12 @@ mc admin user svcacct edit myminio <ACCESS_KEY> --policy policy.json
 #### Install Custom Resources and deploy the controller
 
 ```sh
-kubectl apply -f https://raw.githubusercontent.com/linka-cloud/minio-bucket-controller/main/manifests.yaml
+kubectl apply -f https://raw.githubusercontent.com/linka-cloud/minio-bucket-controller/main/deploy/manifests.yaml
 ```
 
 The controller will not be created as it requires a secret named **minio-bucket-controller-credentials** with the MinIO credentials.
 
-Then create a secret with the credentials:
+Create the secret containing the credentials:
 
 ```sh
 cat <<EOF | kubectl apply -f -
@@ -173,13 +184,172 @@ metadata:
   name: minio-bucket-controller-credentials
   namespace: minio-bucket-controller-system
 stringData:
-  MINIO_ACCESS_KEY: <ACCESS_KEY>
-  MINIO_SECRET_KEY: <SECRET_KEY>
-  MINIO_ENDPOINT: myminio:9000
+  MINIO_ACCESS_KEY: $MINIO_ACCESS_KEY
+  MINIO_SECRET_KEY: $MINIO_SECRET_KEY
+  MINIO_ENDPOINT: $MINIO_ENDPOINT
   # uncomment if you don't use tls
   # MINIO_INSECURE: "true"
 EOF
 ```
+
+The controller should soon be running:
+
+```sh
+kubectl get po -n minio-bucket-controller-system 
+```
+```
+NAME                                                          READY   STATUS    RESTARTS   AGE
+minio-bucket-controller-controller-manager-857dd9d7ff-279n6   2/2     Running   0          12m
+```
+
+#### Create a sample bucket and a sample application
+
+We can now create a Bucket resource:
+
+```sh
+cat <<EOF | kubectl apply -f -
+apiVersion: s3.linka.cloud/v1alpha1
+kind: Bucket
+metadata:
+  name: bucket-sample
+  namespace: default
+spec:
+  reclaimPolicy: Delete
+  secretName: bucket-sample-creds
+EOF
+```
+
+Validate that the bucket has been created:
+
+```sh
+kubectl get buckets -n default
+```
+
+```yaml
+NAME            SECRET                RECLAIM   ENDPOINT
+bucket-sample   bucket-sample-creds   Delete    myminio:9000
+```
+
+And that the secret has been created:
+
+```sh
+kubectl describe secret -n default bucket-sample-creds
+```
+
+```
+Name:         bucket-sample-creds
+Namespace:    default
+Labels:       <none>
+Annotations:  <none>
+
+Type:  Opaque
+
+Data
+====
+MINIO_SECURE:      4 bytes
+MINIO_ACCESS_KEY:  20 bytes
+MINIO_BUCKET:      13 bytes
+MINIO_ENDPOINT:    18 bytes
+MINIO_SECRET_KEY:  40 bytes
+```
+
+We can now create a sample application that uses the bucket.
+
+The deployment uses the secret to configure the `mc` client and then runs a container that does nothing but keep the pod alive:
+
+```sh
+cat <<EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bucket-sample-mc
+  namespace: default
+  labels:
+    app: bucket-sample-mc
+spec:
+  replicas: 1
+  template:
+    metadata:
+      name: bucket-sample-mc
+      labels:
+        app: bucket-sample-mc
+    spec:
+      initContainers:
+      - name: mc-setup
+        image: minio/mc
+        imagePullPolicy: IfNotPresent
+        command: [ "/bin/sh", "-c" ]
+        args:
+        - |
+          set -e
+          mc alias set minio "http\$([[ "\$MINIO_SECURE" = "true" ]] && echo s)://\${MINIO_ENDPOINT}" "\$MINIO_ACCESS_KEY" "\$MINIO_SECRET_KEY"
+        envFrom:
+        - secretRef:
+            name: bucket-sample-creds
+        volumeMounts:
+        - name: mc-config
+          mountPath: /root/.mc
+      containers:
+      - name: mc
+        image: minio/mc
+        imagePullPolicy: IfNotPresent
+        command: [ "/bin/sh", "-c" ]
+        args:
+        - tail -f /dev/null
+        volumeMounts:
+        - name: mc-config
+          mountPath: /root/.mc
+      restartPolicy: Always
+      volumes:
+      - name: mc-config
+        emptyDir:
+          medium: Memory
+  selector:
+    matchLabels:
+      app: bucket-sample-mc
+EOF
+```
+
+It should soon be running:
+
+```sh
+kubectl get deployments.apps -n default bucket-sample-mc 
+```
+
+```
+NAME               READY   UP-TO-DATE   AVAILABLE   AGE
+bucket-sample-mc   1/1     1            1           3s   
+```
+
+You can now exec into the pod and run `mc` commands:
+
+```sh
+kubectl exec -n default -i -t deployments/bucket-sample-mc -- mc ls minio
+```
+
+```
+Defaulted container "mc" out of: mc, mc-setup (init)
+[2023-01-11 11:47:03 UTC]     0B bucket-sample/
+```
+
+#### Cleanup
+
+```sh
+kubectl delete -n default deploy bucket-sample-mc
+kubectl delete -n default bucket bucket-sample
+```
+
+### Uninstall
+
+Always delete the Buckets before uninstalling the controller, or the buckets will be stuck in the **Deleting** state.
+
+**Warning**: This will delete all the created buckets with `reclaimPolicy` set to `Delete`.
+
+```sh
+kubectl delete buckets.s3.linka.cloud --all --all-namespaces
+kubectl delete -f https://raw.githubusercontent.com/linka-cloud/minio-bucket-controller/main/deploy/manifests.yaml
+```
+
 ## License
 
 Copyright 2023.
