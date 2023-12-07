@@ -67,6 +67,13 @@ spec:
                 minLength: 3
                 pattern: ^[a-z0-9]+[a-z0-9.-]*[a-z0-9]+$
                 type: string
+              secretTemplate:
+                additionalProperties:
+                  type: string
+                description: SecretTemplate is the template for the secret containing
+                  the credentials to access the bucket that should be created. The
+                  templates takes a BucketAccess struct as input.
+                type: object
             type: object
           status:
             description: BucketStatus defines the observed state of Bucket

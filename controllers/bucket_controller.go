@@ -19,11 +19,13 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"text/template"
 
 	"github.com/minio/madmin-go"
 	"github.com/minio/minio-go/v7"
 	"go.uber.org/multierr"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -115,6 +117,9 @@ func (r *BucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	if re, ok, err := r.reconcileSecret(ctx, &bucket); !ok {
 		return re, err
 	}
+	if re, ok, err := r.reconcileSecretTemplate(ctx, &bucket); !ok {
+		return re, err
+	}
 	return ctrl.Result{}, nil
 }
 
@@ -199,9 +204,9 @@ func (r *BucketReconciler) reconcilePolicy(ctx context.Context, bucket *s3v1alph
 }
 
 func (r *BucketReconciler) reconcileSecret(ctx context.Context, bucket *s3v1alpha1.Bucket) (ctrl.Result, bool, error) {
-	name := r.name(bucket)
 	log := log.FromContext(ctx)
 	log.Info("reconciling secret")
+	name := r.name(bucket)
 	if bucket.Status.SecretName != nil && *bucket.Spec.SecretName != *bucket.Status.SecretName {
 		log.Info("deleting old secret")
 		if err := r.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: *bucket.Status.SecretName, Namespace: bucket.Namespace}}); err != nil {
@@ -245,10 +250,10 @@ func (r *BucketReconciler) reconcileSecret(ctx context.Context, bucket *s3v1alph
 		return ctrl.Result{}, false, fmt.Errorf("unable to create service account: %w", err)
 	}
 	secret.Data = map[string][]byte{
+		s3v1alpha1.MinioBucket:    []byte(bucket.Name),
 		s3v1alpha1.MinioAccessKey: []byte(creds.AccessKey),
 		s3v1alpha1.MinioSecretKey: []byte(creds.SecretKey),
 		s3v1alpha1.MinioEndpoint:  []byte(r.MC.Endpoint()),
-		s3v1alpha1.MinioBucket:    []byte(bucket.Name),
 		s3v1alpha1.MinioSecure:    []byte(strconv.FormatBool(r.MC.Secure())),
 	}
 	if err := ctrl.SetControllerReference(bucket, &secret, r.Scheme); err != nil {
@@ -264,6 +269,58 @@ func (r *BucketReconciler) reconcileSecret(ctx context.Context, bucket *s3v1alph
 		return ctrl.Result{}, false, multierr.Combine(fmt.Errorf("unable to update bucket status: %w", err), r.Delete(ctx, &secret), r.MC.DeleteServiceAccount(ctx, name))
 	}
 	r.Rec.Eventf(bucket, "SecretCreated", "Secret %s created", secret.Name)
+	return ctrl.Result{}, false, nil
+}
+
+func (r *BucketReconciler) reconcileSecretTemplate(ctx context.Context, bucket *s3v1alpha1.Bucket) (ctrl.Result, bool, error) {
+	log := log.FromContext(ctx)
+	log.Info("reconciling secret template")
+
+	var secret corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Name: *bucket.Spec.SecretName, Namespace: bucket.Namespace}, &secret); err != nil {
+		// should not happen
+		return ctrl.Result{}, false, err
+	}
+
+	a := s3v1alpha1.BucketAccess{
+		Endpoint:  r.MC.Endpoint(),
+		Secure:    r.MC.Secure(),
+		AccessKey: string(secret.Data[s3v1alpha1.MinioAccessKey]),
+		SecretKey: string(secret.Data[s3v1alpha1.MinioSecretKey]),
+		Bucket:    bucket.Name,
+	}
+
+	s2 := secret.DeepCopy()
+	s2.Data = map[string][]byte{
+		s3v1alpha1.MinioBucket:    []byte(bucket.Name),
+		s3v1alpha1.MinioAccessKey: []byte(a.AccessKey),
+		s3v1alpha1.MinioSecretKey: []byte(a.SecretKey),
+		s3v1alpha1.MinioEndpoint:  []byte(a.Endpoint),
+		s3v1alpha1.MinioSecure:    []byte(strconv.FormatBool(a.Secure)),
+	}
+
+	for _, v := range []string{s3v1alpha1.MinioAccessKey, s3v1alpha1.MinioSecretKey, s3v1alpha1.MinioEndpoint, s3v1alpha1.MinioBucket, s3v1alpha1.MinioSecure} {
+		if _, ok := bucket.Spec.SecretTemplate[v]; ok {
+			return ctrl.Result{}, false, fmt.Errorf("secret template must not contain %s", v)
+		}
+	}
+	for k, v := range bucket.Spec.SecretTemplate {
+		tmp, err := template.New("secret").Parse(v)
+		if err != nil {
+			return ctrl.Result{}, false, fmt.Errorf("%s: unable to parse secret template: %w", k, err)
+		}
+		var buf bytes.Buffer
+		if err := tmp.Execute(&buf, a); err != nil {
+			return ctrl.Result{}, false, fmt.Errorf("%s: unable to execute secret template: %w", k, err)
+		}
+		s2.Data[k] = buf.Bytes()
+	}
+	if equality.Semantic.DeepEqual(secret.Data, s2.Data) {
+		return ctrl.Result{}, true, nil
+	}
+	if err := r.Update(ctx, s2); err != nil {
+		return ctrl.Result{}, false, fmt.Errorf("unable to update secret: %w", err)
+	}
 	return ctrl.Result{}, false, nil
 }
 

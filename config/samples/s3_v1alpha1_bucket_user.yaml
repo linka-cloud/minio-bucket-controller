@@ -7,26 +7,15 @@ metadata:
     app: bucket-sample-mc
 spec:
   replicas: 1
+  selector:
+    matchLabels:
+      app: bucket-sample-mc
   template:
     metadata:
       name: bucket-sample-mc
       labels:
         app: bucket-sample-mc
     spec:
-      initContainers:
-      - name: mc-setup
-        image: minio/mc
-        command: [ "/bin/sh", "-c" ]
-        args:
-        - |
-          set -e
-          mc alias set minio "http$([[ "$MINIO_SECURE" = "true" ]] && echo s)://${MINIO_ENDPOINT}" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"
-        envFrom:
-        - secretRef:
-            name: bucket-sample-creds
-        volumeMounts:
-        - name: mc-config
-          mountPath: /root/.mc
       containers:
       - name: mc
         image: minio/mc
@@ -38,12 +27,10 @@ spec:
         - tail -f /dev/null
         volumeMounts:
         - name: mc-config
-          mountPath: /root/.mc
+          mountPath: /root/.mc/config.json
+          subPath: config.json
       restartPolicy: Always
       volumes:
       - name: mc-config
-        emptyDir:
-          medium: Memory
-  selector:
-    matchLabels:
-      app: bucket-sample-mc
+        secret:
+          secretName: bucket-sample-creds

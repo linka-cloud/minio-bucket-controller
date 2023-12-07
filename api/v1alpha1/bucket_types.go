@@ -38,6 +38,14 @@ const (
 	MinioSecure    = "MINIO_SECURE"
 )
 
+type BucketAccess struct {
+	AccessKey string
+	SecretKey string
+	Endpoint  string
+	Bucket    string
+	Secure    bool
+}
+
 // BucketSpec defines the desired state of Bucket
 type BucketSpec struct {
 	// ReclaimPolicy is the name of the BucketReclaimPolicy to use for this bucket.
@@ -49,6 +57,10 @@ type BucketSpec struct {
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=^[a-z0-9]+[a-z0-9.-]*[a-z0-9]+$
 	SecretName *string `json:"secretName,omitempty"`
+	// SecretTemplate is the template for the secret containing the credentials to access the bucket that should be created.
+	// The templates takes a BucketAccess struct as input.
+	// +optional
+	SecretTemplate map[string]string `json:"secretTemplate,omitempty"`
 }
 
 // BucketStatus defines the observed state of Bucket

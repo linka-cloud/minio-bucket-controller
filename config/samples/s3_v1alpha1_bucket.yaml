@@ -12,3 +12,17 @@ metadata:
 spec:
   reclaimPolicy: Delete
   secretName: bucket-sample-creds
+  secretTemplate:
+    config.json: |
+      {
+        "version": "10",
+        "aliases": {
+          "minio": {
+            "url": "http{{ if .Secure }}s{{ end }}://{{ .Endpoint }}",
+            "accessKey": "{{ .AccessKey }}",
+            "secretKey": "{{ .SecretKey }}",
+            "api": "s3v4",
+            "path": "auto"
+          }
+        }
+      }

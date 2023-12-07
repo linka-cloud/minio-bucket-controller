@@ -211,11 +211,31 @@ cat <<EOF | kubectl apply -f -
 apiVersion: s3.linka.cloud/v1alpha1
 kind: Bucket
 metadata:
+  labels:
+    app.kubernetes.io/name: bucket
+    app.kubernetes.io/instance: bucket-sample
+    app.kubernetes.io/part-of: minio-bucket-controller
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: minio-bucket-controller
   name: bucket-sample
   namespace: default
 spec:
   reclaimPolicy: Delete
   secretName: bucket-sample-creds
+  secretTemplate:
+    config.json: |
+      {
+        "version": "10",
+        "aliases": {
+          "minio": {
+            "url": "http{{ if .Secure }}s{{ end }}://{{ .Endpoint }}",
+            "accessKey": "{{ .AccessKey }}",
+            "secretKey": "{{ .SecretKey }}",
+            "api": "s3v4",
+            "path": "auto"
+          }
+        }
+      }
 EOF
 ```
 
@@ -246,11 +266,12 @@ Type:  Opaque
 
 Data
 ====
-MINIO_SECURE:      4 bytes
+config.json:       254 bytes
 MINIO_ACCESS_KEY:  20 bytes
 MINIO_BUCKET:      13 bytes
 MINIO_ENDPOINT:    18 bytes
 MINIO_SECRET_KEY:  40 bytes
+MINIO_SECURE:      4 bytes
 ```
 
 We can now create a sample application that uses the bucket.
@@ -268,45 +289,33 @@ metadata:
     app: bucket-sample-mc
 spec:
   replicas: 1
+  selector:
+    matchLabels:
+      app: bucket-sample-mc
   template:
     metadata:
       name: bucket-sample-mc
       labels:
         app: bucket-sample-mc
     spec:
-      initContainers:
-      - name: mc-setup
-        image: minio/mc
-        imagePullPolicy: IfNotPresent
-        command: [ "/bin/sh", "-c" ]
-        args:
-        - |
-          set -e
-          mc alias set minio "http\$([[ "\$MINIO_SECURE" = "true" ]] && echo s)://\${MINIO_ENDPOINT}" "\$MINIO_ACCESS_KEY" "\$MINIO_SECRET_KEY"
-        envFrom:
-        - secretRef:
-            name: bucket-sample-creds
-        volumeMounts:
-        - name: mc-config
-          mountPath: /root/.mc
       containers:
       - name: mc
         image: minio/mc
         imagePullPolicy: IfNotPresent
-        command: [ "/bin/sh", "-c" ]
+        command:
+        - /bin/sh
         args:
+        - -c
         - tail -f /dev/null
         volumeMounts:
         - name: mc-config
-          mountPath: /root/.mc
+          mountPath: /root/.mc/config.json
+          subPath: config.json
       restartPolicy: Always
       volumes:
       - name: mc-config
-        emptyDir:
-          medium: Memory
-  selector:
-    matchLabels:
-      app: bucket-sample-mc
+        secret:
+          secretName: bucket-sample-creds
 EOF
 ```
 
@@ -328,8 +337,10 @@ kubectl exec -n default -i -t deployments/bucket-sample-mc -- mc ls minio
 ```
 
 ```
-Defaulted container "mc" out of: mc, mc-setup (init)
-[2023-01-11 11:47:03 UTC]     0B bucket-sample/
+mc: Successfully created `/root/.mc/share`.
+mc: Initialized share uploads `/root/.mc/share/uploads.json` file.
+mc: Initialized share downloads `/root/.mc/share/downloads.json` file.
+[2023-12-07 18:01:12 UTC]     0B bucket-sample/
 ```
 
 #### Cleanup
