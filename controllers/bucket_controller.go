@@ -26,6 +26,7 @@ import (
 	"go.uber.org/multierr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -105,20 +106,51 @@ func (r *BucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 		return ctrl.Result{}, nil
 	}
+	if len(bucket.Status.Conditions) == 0 {
+		meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
+			Type:               s3v1alpha1.BucketConditionCreating,
+			Status:             metav1.ConditionTrue,
+			Reason:             "Creating",
+			Message:            "Bucket is being created",
+			ObservedGeneration: bucket.Generation,
+			LastTransitionTime: metav1.Now(),
+		})
+		if err := r.Status().Update(ctx, &bucket); err != nil {
+			return ctrl.Result{}, err
+		}
+		r.Rec.Eventf(&bucket, "BucketCreating", "Bucket %s is being created", bucket.Name)
+		return ctrl.Result{}, nil
+	}
 	if re, ok, err := r.reconcileBucket(ctx, &bucket); !ok {
-		return re, err
+		return re, r.err(&bucket, err, s3v1alpha1.BucketConditionReasonErrCreateBucket)
 	}
 	if re, ok, err := r.reconcileUser(ctx, &bucket); !ok {
-		return re, err
+		return re, r.err(&bucket, err, s3v1alpha1.BucketConditionReasonErrCreateUser)
 	}
 	if re, ok, err := r.reconcilePolicy(ctx, &bucket); !ok {
-		return re, err
+		return re, r.err(&bucket, err, s3v1alpha1.BucketConditionReasonErrCreatePolicy)
 	}
 	if re, ok, err := r.reconcileSecret(ctx, &bucket); !ok {
-		return re, err
+		return re, r.err(&bucket, err, s3v1alpha1.BucketConditionReasonErrCreateSecret)
 	}
 	if re, ok, err := r.reconcileSecretTemplate(ctx, &bucket); !ok {
-		return re, err
+		return re, r.err(&bucket, err, s3v1alpha1.BucketConditionReasonErrCreateSecret)
+	}
+	if !meta.IsStatusConditionTrue(bucket.Status.Conditions, s3v1alpha1.BucketConditionReady) {
+		meta.RemoveStatusCondition(&bucket.Status.Conditions, s3v1alpha1.BucketConditionCreating)
+		meta.RemoveStatusCondition(&bucket.Status.Conditions, s3v1alpha1.BucketConditionError)
+		meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
+			Type:               s3v1alpha1.BucketConditionReady,
+			Status:             metav1.ConditionTrue,
+			Reason:             "Ready",
+			Message:            "Bucket is ready",
+			ObservedGeneration: bucket.Generation,
+			LastTransitionTime: metav1.Now(),
+		})
+		if err := r.Status().Update(ctx, &bucket); err != nil {
+			return ctrl.Result{}, err
+		}
+		r.Rec.Eventf(&bucket, "BucketReady", "Bucket %s is ready", bucket.Name)
 	}
 	return ctrl.Result{}, nil
 }
@@ -231,6 +263,9 @@ func (r *BucketReconciler) reconcileSecret(ctx context.Context, bucket *s3v1alph
 	} else {
 		return ctrl.Result{}, true, nil
 	}
+	if err := ctrl.SetControllerReference(bucket, &secret, r.Scheme); err != nil {
+		return ctrl.Result{}, false, fmt.Errorf("unable to set controller reference: %w", err)
+	}
 	res, err := r.MC.ListServiceAccounts(ctx, name)
 	if err != nil {
 		return ctrl.Result{}, false, fmt.Errorf("unable to list service accounts: %w", err)
@@ -328,6 +363,20 @@ func (r *BucketReconciler) reconcileDeletion(ctx context.Context, bucket *s3v1al
 	log := log.FromContext(ctx)
 	log.Info("reconciling deletion")
 	name := r.name(bucket)
+	if !meta.IsStatusConditionTrue(bucket.Status.Conditions, s3v1alpha1.BucketConditionDeleting) {
+		meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
+			Type:               s3v1alpha1.BucketConditionDeleting,
+			Status:             metav1.ConditionTrue,
+			Reason:             "Deleting",
+			Message:            "Bucket is being deleted",
+			ObservedGeneration: bucket.Generation,
+		})
+		if err := r.Status().Update(ctx, bucket); err != nil {
+			return ctrl.Result{}, false, fmt.Errorf("unable to update bucket status: %w", err)
+		}
+		r.Rec.Eventf(bucket, "BucketDeleting", "Bucket %s is being deleted", bucket.Name)
+		return ctrl.Result{}, false, nil
+	}
 	us, err := r.MC.ListUsers(ctx)
 	if err != nil {
 		return ctrl.Result{}, false, fmt.Errorf("unable to list users: %w", err)
@@ -371,4 +420,23 @@ func (r *BucketReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 func (r *BucketReconciler) name(b *s3v1alpha1.Bucket) string {
 	return prefix + b.Name
+}
+
+func (r *BucketReconciler) err(bucket *s3v1alpha1.Bucket, err error, reason string) error {
+	if err == nil {
+		return nil
+	}
+	meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
+		Type:               s3v1alpha1.BucketConditionError,
+		Status:             metav1.ConditionTrue,
+		Reason:             reason,
+		Message:            err.Error(),
+		ObservedGeneration: bucket.Generation,
+		LastTransitionTime: metav1.Now(),
+	})
+	if err2 := r.Status().Update(context.Background(), bucket); err != nil {
+		return multierr.Combine(err, err2)
+	}
+	r.Rec.Warnf(bucket, "BucketError", err.Error())
+	return err
 }
