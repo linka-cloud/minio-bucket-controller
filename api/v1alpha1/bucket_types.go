@@ -88,8 +88,8 @@ type BucketStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Reclaim",type=string,JSONPath=`.spec.reclaimPolicy`
 // +kubebuilder:printcolumn:name="Status",type=string,JSONPath=".status.conditions[-1:].type"
-// +kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=`.status.endpoint,priority=1`
-// +kubebuilder:printcolumn:name="Secret",type=string,JSONPath=`.status.secretName,priority=1`
+// +kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=`.status.endpoint`,priority=1
+// +kubebuilder:printcolumn:name="Secret",type=string,JSONPath=`.status.secretName`
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // Bucket is the Schema for the buckets API

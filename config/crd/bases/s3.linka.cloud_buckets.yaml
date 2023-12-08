@@ -22,10 +22,11 @@ spec:
     - jsonPath: .status.conditions[-1:].type
       name: Status
       type: string
-    - jsonPath: .status.endpoint,priority=1
+    - jsonPath: .status.endpoint
       name: Endpoint
+      priority: 1
       type: string
-    - jsonPath: .status.secretName,priority=1
+    - jsonPath: .status.secretName
       name: Secret
       type: string
     - jsonPath: .metadata.creationTimestamp
