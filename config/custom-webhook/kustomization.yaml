@@ -1,0 +1,38 @@
+bases:
+- ../webhook
+
+patches:
+- target:
+    group: admissionregistration.k8s.io
+    version: v1
+    kind: ValidatingWebhookConfiguration
+    name: validating-webhook-configuration
+  patch: |-
+    - op: add
+      path: /webhooks/2
+      value:
+        admissionReviewVersions:
+        - v1
+        clientConfig:
+          service:
+            name: webhook-service
+            namespace: system
+            path: /validate--v1-secret
+        failurePolicy: Fail
+        name: vsecret.kb.io
+        objectSelector:
+          matchExpressions:
+          - key: s3.linka.cloud/service-account
+            operator: Exists
+        rules:
+        - apiGroups:
+          - ""
+          apiVersions:
+          - v1
+          operations:
+          - CREATE
+          - UPDATE
+          - DELETE
+          resources:
+          - secrets
+        sideEffects: None

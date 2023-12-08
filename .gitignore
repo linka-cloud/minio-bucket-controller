@@ -27,3 +27,6 @@ Dockerfile.cross
 .idea
 deploy/secret.yaml
 .creds
+config/local
+certs
+minio.LICENSE

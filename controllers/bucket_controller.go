@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"strconv"
 	"text/template"
+	"time"
 
-	"github.com/minio/madmin-go"
 	"github.com/minio/minio-go/v7"
 	"go.uber.org/multierr"
 	corev1 "k8s.io/api/core/v1"
@@ -30,7 +30,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/json"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -113,7 +112,6 @@ func (r *BucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			Reason:             "Creating",
 			Message:            "Bucket is being created",
 			ObservedGeneration: bucket.Generation,
-			LastTransitionTime: metav1.Now(),
 		})
 		if err := r.Status().Update(ctx, &bucket); err != nil {
 			return ctrl.Result{}, err
@@ -121,19 +119,13 @@ func (r *BucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		r.Rec.Eventf(&bucket, "BucketCreating", "Bucket %s is being created", bucket.Name)
 		return ctrl.Result{}, nil
 	}
+	if re, ok, err := r.reconcileServiceAccount(ctx, &bucket); !ok {
+		return re, r.err(&bucket, err, s3v1alpha1.BucketConditionReasonErrCreateServiceAccount)
+	}
 	if re, ok, err := r.reconcileBucket(ctx, &bucket); !ok {
 		return re, r.err(&bucket, err, s3v1alpha1.BucketConditionReasonErrCreateBucket)
 	}
-	if re, ok, err := r.reconcileUser(ctx, &bucket); !ok {
-		return re, r.err(&bucket, err, s3v1alpha1.BucketConditionReasonErrCreateUser)
-	}
-	if re, ok, err := r.reconcilePolicy(ctx, &bucket); !ok {
-		return re, r.err(&bucket, err, s3v1alpha1.BucketConditionReasonErrCreatePolicy)
-	}
 	if re, ok, err := r.reconcileSecret(ctx, &bucket); !ok {
-		return re, r.err(&bucket, err, s3v1alpha1.BucketConditionReasonErrCreateSecret)
-	}
-	if re, ok, err := r.reconcileSecretTemplate(ctx, &bucket); !ok {
 		return re, r.err(&bucket, err, s3v1alpha1.BucketConditionReasonErrCreateSecret)
 	}
 	if !meta.IsStatusConditionTrue(bucket.Status.Conditions, s3v1alpha1.BucketConditionReady) {
@@ -145,7 +137,6 @@ func (r *BucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			Reason:             "Ready",
 			Message:            "Bucket is ready",
 			ObservedGeneration: bucket.Generation,
-			LastTransitionTime: metav1.Now(),
 		})
 		if err := r.Status().Update(ctx, &bucket); err != nil {
 			return ctrl.Result{}, err
@@ -183,62 +174,41 @@ func (r *BucketReconciler) reconcileBucket(ctx context.Context, bucket *s3v1alph
 	return ctrl.Result{}, false, nil
 }
 
-func (r *BucketReconciler) reconcileUser(ctx context.Context, bucket *s3v1alpha1.Bucket) (ctrl.Result, bool, error) {
-	name := r.name(bucket)
-	log := log.FromContext(ctx).WithValues("user", name)
-	log.Info("reconciling user")
-	us, err := r.MC.ListUsers(ctx)
-	if err != nil {
-		return ctrl.Result{}, false, fmt.Errorf("unable to list users: %w", err)
+func (r *BucketReconciler) reconcileServiceAccount(ctx context.Context, bucket *s3v1alpha1.Bucket) (ctrl.Result, bool, error) {
+	log := log.FromContext(ctx)
+	log.Info("reconciling service account")
+	var sa s3v1alpha1.BucketServiceAccount
+	if err := r.Get(ctx, types.NamespacedName{Name: bucket.Spec.ServiceAccount, Namespace: bucket.Namespace}, &sa); err != nil {
+		if client.IgnoreNotFound(err) != nil {
+			return ctrl.Result{}, false, fmt.Errorf("unable to get service account: %w", err)
+		}
+		sa = s3v1alpha1.BucketServiceAccount{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      bucket.Spec.ServiceAccount,
+				Namespace: bucket.Namespace,
+			},
+		}
+		if err := r.Create(ctx, &sa); err != nil {
+			return ctrl.Result{}, false, fmt.Errorf("unable to create service account: %w", err)
+		}
 	}
-	if _, ok := us[name]; ok {
+	b := bucket.DeepCopy()
+	if err := ForceControllerReference(&sa, b, r.Scheme); err != nil {
+		return ctrl.Result{}, false, fmt.Errorf("unable to set controller reference: %v", err)
+	}
+	if equality.Semantic.DeepEqual(b, bucket) {
 		return ctrl.Result{}, true, nil
 	}
-	log.Info("creating user")
-	if err := r.MC.AddUser(ctx, name, mc.GeneratePassword()); err != nil {
-		return ctrl.Result{}, false, fmt.Errorf("unable to create user: %w", err)
+	if err := r.Update(ctx, b); err != nil {
+		return ctrl.Result{}, false, fmt.Errorf("unable to update bucket: %w", err)
 	}
-	r.Rec.Eventf(bucket, "UserCreated", "User %s created", name)
-	return ctrl.Result{}, true, nil
-}
-
-func (r *BucketReconciler) reconcilePolicy(ctx context.Context, bucket *s3v1alpha1.Bucket) (ctrl.Result, bool, error) {
-	name := r.name(bucket)
-	log := ctrl.LoggerFrom(ctx).WithValues("policy", name)
-	log.Info("reconciling policy")
-	want := mc.Policy(bucket.Name)
-	ps, err := r.MC.ListCannedPolicies(ctx)
-	if err != nil {
-		return ctrl.Result{}, false, fmt.Errorf("unable to list policies: %w", err)
-	}
-	if js, ok := ps[r.name(bucket)]; ok {
-		log.Info("policy exists")
-		got, err := json.Marshal(js)
-		if err != nil {
-			return ctrl.Result{}, false, fmt.Errorf("unable to marshal policy: %w", err)
-		}
-		if bytes.Equal(got, want) {
-			return ctrl.Result{}, true, nil
-		}
-		log.Info("policy differs: updating")
-	} else {
-		log.Info("creating policy")
-	}
-	if err := r.MC.AddCannedPolicy(ctx, name, want); err != nil {
-		return ctrl.Result{}, false, fmt.Errorf("unable to add policy: %w", err)
-	}
-	log.Info("assigning policy")
-	if err := r.MC.SetPolicy(ctx, name, name, false); err != nil {
-		return ctrl.Result{}, false, fmt.Errorf("unable to set policy: %w", err)
-	}
-	r.Rec.Eventf(bucket, "PolicyConfigured", "Policy %s configured", name)
-	return ctrl.Result{}, true, nil
+	return ctrl.Result{}, false, nil
 }
 
 func (r *BucketReconciler) reconcileSecret(ctx context.Context, bucket *s3v1alpha1.Bucket) (ctrl.Result, bool, error) {
 	log := log.FromContext(ctx)
 	log.Info("reconciling secret")
-	name := r.name(bucket)
+	name := name(bucket.Name)
 	if bucket.Status.SecretName != nil && *bucket.Spec.SecretName != *bucket.Status.SecretName {
 		log.Info("deleting old secret")
 		if err := r.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: *bucket.Status.SecretName, Namespace: bucket.Namespace}}); err != nil {
@@ -249,7 +219,10 @@ func (r *BucketReconciler) reconcileSecret(ctx context.Context, bucket *s3v1alph
 			r.Rec.Eventf(bucket, "SecretDeleted", "Secret %s deleted", *bucket.Status.SecretName)
 		}
 	}
-	var secret corev1.Secret
+	var (
+		secret corev1.Secret
+		update bool
+	)
 	if err := r.Get(ctx, types.NamespacedName{Name: *bucket.Spec.SecretName, Namespace: bucket.Namespace}, &secret); err != nil {
 		if client.IgnoreNotFound(err) != nil {
 			return ctrl.Result{}, false, fmt.Errorf("unable to get secret: %w", err)
@@ -261,83 +234,28 @@ func (r *BucketReconciler) reconcileSecret(ctx context.Context, bucket *s3v1alph
 			},
 		}
 	} else {
-		return ctrl.Result{}, true, nil
+		update = true
 	}
-	if err := ctrl.SetControllerReference(bucket, &secret, r.Scheme); err != nil {
-		return ctrl.Result{}, false, fmt.Errorf("unable to set controller reference: %w", err)
+	s2 := secret.DeepCopy()
+	s2.Type = s3v1alpha1.BucketAccessSecretType
+	var as corev1.Secret
+	if err := r.Get(ctx, types.NamespacedName{Name: bucket.Spec.ServiceAccount + saSecretSuffix, Namespace: bucket.Namespace}, &as); err != nil {
+		log.Error(err, "failed to get service account secret")
+		return ctrl.Result{RequeueAfter: time.Second}, false, client.IgnoreNotFound(err)
 	}
-	res, err := r.MC.ListServiceAccounts(ctx, name)
-	if err != nil {
-		return ctrl.Result{}, false, fmt.Errorf("unable to list service accounts: %w", err)
-	}
-	if len(res.Accounts) != 0 {
-		log.Info("service account already exists for bucket")
-		for _, v := range res.Accounts {
-			log.Info("deleting service account %s", v)
-			if err := r.MC.DeleteServiceAccount(ctx, v); err != nil {
-				return ctrl.Result{}, false, fmt.Errorf("unable to remove service account: %w", err)
-			}
-		}
-	}
-	log.Info("creating service account")
-	creds, err := r.MC.AddServiceAccount(ctx, madmin.AddServiceAccountReq{TargetUser: name})
-	if err != nil {
-		return ctrl.Result{}, false, fmt.Errorf("unable to create service account: %w", err)
-	}
-	secret.Data = map[string][]byte{
-		s3v1alpha1.MinioBucket:    []byte(bucket.Name),
-		s3v1alpha1.MinioAccessKey: []byte(creds.AccessKey),
-		s3v1alpha1.MinioSecretKey: []byte(creds.SecretKey),
-		s3v1alpha1.MinioEndpoint:  []byte(r.MC.Endpoint()),
-		s3v1alpha1.MinioSecure:    []byte(strconv.FormatBool(r.MC.Secure())),
-	}
-	if err := ctrl.SetControllerReference(bucket, &secret, r.Scheme); err != nil {
-		return ctrl.Result{}, false, multierr.Combine(fmt.Errorf("unable to set controller reference: %w", err), r.MC.DeleteServiceAccount(ctx, name))
-	}
-	log.Info("creating secret")
-	if err := r.Create(ctx, &secret); err != nil {
-		return ctrl.Result{}, false, multierr.Combine(fmt.Errorf("unable to create secret: %w", err), r.MC.DeleteServiceAccount(ctx, name))
-	}
-	bucket.Status.SecretName = &secret.Name
-	log.Info("updating bucket status")
-	if err := r.Status().Update(ctx, bucket); err != nil {
-		return ctrl.Result{}, false, multierr.Combine(fmt.Errorf("unable to update bucket status: %w", err), r.Delete(ctx, &secret), r.MC.DeleteServiceAccount(ctx, name))
-	}
-	r.Rec.Eventf(bucket, "SecretCreated", "Secret %s created", secret.Name)
-	return ctrl.Result{}, false, nil
-}
-
-func (r *BucketReconciler) reconcileSecretTemplate(ctx context.Context, bucket *s3v1alpha1.Bucket) (ctrl.Result, bool, error) {
-	log := log.FromContext(ctx)
-	log.Info("reconciling secret template")
-
-	var secret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Name: *bucket.Spec.SecretName, Namespace: bucket.Namespace}, &secret); err != nil {
-		// should not happen
-		return ctrl.Result{}, false, err
-	}
-
 	a := s3v1alpha1.BucketAccess{
+		Bucket:    bucket.Name,
+		AccessKey: string(as.Data[s3v1alpha1.MinioAccessKey]),
+		SecretKey: string(as.Data[s3v1alpha1.MinioSecretKey]),
 		Endpoint:  r.MC.Endpoint(),
 		Secure:    r.MC.Secure(),
-		AccessKey: string(secret.Data[s3v1alpha1.MinioAccessKey]),
-		SecretKey: string(secret.Data[s3v1alpha1.MinioSecretKey]),
-		Bucket:    bucket.Name,
 	}
-
-	s2 := secret.DeepCopy()
 	s2.Data = map[string][]byte{
 		s3v1alpha1.MinioBucket:    []byte(bucket.Name),
-		s3v1alpha1.MinioAccessKey: []byte(a.AccessKey),
-		s3v1alpha1.MinioSecretKey: []byte(a.SecretKey),
-		s3v1alpha1.MinioEndpoint:  []byte(a.Endpoint),
-		s3v1alpha1.MinioSecure:    []byte(strconv.FormatBool(a.Secure)),
-	}
-
-	for _, v := range []string{s3v1alpha1.MinioAccessKey, s3v1alpha1.MinioSecretKey, s3v1alpha1.MinioEndpoint, s3v1alpha1.MinioBucket, s3v1alpha1.MinioSecure} {
-		if _, ok := bucket.Spec.SecretTemplate[v]; ok {
-			return ctrl.Result{}, false, fmt.Errorf("secret template must not contain %s", v)
-		}
+		s3v1alpha1.MinioAccessKey: as.Data[s3v1alpha1.MinioAccessKey],
+		s3v1alpha1.MinioSecretKey: as.Data[s3v1alpha1.MinioSecretKey],
+		s3v1alpha1.MinioEndpoint:  []byte(r.MC.Endpoint()),
+		s3v1alpha1.MinioSecure:    []byte(strconv.FormatBool(r.MC.Secure())),
 	}
 	for k, v := range bucket.Spec.SecretTemplate {
 		tmp, err := template.New("secret").Parse(v)
@@ -350,19 +268,36 @@ func (r *BucketReconciler) reconcileSecretTemplate(ctx context.Context, bucket *
 		}
 		s2.Data[k] = buf.Bytes()
 	}
-	if equality.Semantic.DeepEqual(secret.Data, s2.Data) {
+	if err := ctrl.SetControllerReference(bucket, s2, r.Scheme); err != nil {
+		return ctrl.Result{}, false, multierr.Combine(fmt.Errorf("unable to set controller reference: %w", err), r.MC.DeleteServiceAccount(ctx, name))
+	}
+	if equality.Semantic.DeepEqual(secret, s2) {
 		return ctrl.Result{}, true, nil
 	}
-	if err := r.Update(ctx, s2); err != nil {
-		return ctrl.Result{}, false, fmt.Errorf("unable to update secret: %w", err)
+	if update {
+		log.Info("updating secret")
+		if err := r.Update(ctx, s2); err != nil {
+			return ctrl.Result{}, false, fmt.Errorf("unable to update secret: %w", err)
+		}
+		r.Rec.Eventf(bucket, "SecretUpdated", "Secret %s updated", secret.Name)
+		return ctrl.Result{}, true, nil
 	}
-	return ctrl.Result{}, false, nil
+	log.Info("creating secret")
+	if err := r.Create(ctx, s2); err != nil {
+		return ctrl.Result{}, false, multierr.Combine(fmt.Errorf("unable to create secret: %w", err), r.MC.DeleteServiceAccount(ctx, name))
+	}
+	bucket.Status.SecretName = &s2.Name
+	log.Info("updating bucket status")
+	if err := r.Status().Update(ctx, bucket); err != nil {
+		return ctrl.Result{}, false, multierr.Combine(fmt.Errorf("unable to update bucket status: %w", err), r.Delete(ctx, &secret), r.MC.DeleteServiceAccount(ctx, name))
+	}
+	r.Rec.Eventf(bucket, "SecretCreated", "Secret %s created", secret.Name)
+	return ctrl.Result{}, true, nil
 }
 
 func (r *BucketReconciler) reconcileDeletion(ctx context.Context, bucket *s3v1alpha1.Bucket) (ctrl.Result, bool, error) {
 	log := log.FromContext(ctx)
 	log.Info("reconciling deletion")
-	name := r.name(bucket)
 	if !meta.IsStatusConditionTrue(bucket.Status.Conditions, s3v1alpha1.BucketConditionDeleting) {
 		meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
 			Type:               s3v1alpha1.BucketConditionDeleting,
@@ -377,28 +312,6 @@ func (r *BucketReconciler) reconcileDeletion(ctx context.Context, bucket *s3v1al
 		r.Rec.Eventf(bucket, "BucketDeleting", "Bucket %s is being deleted", bucket.Name)
 		return ctrl.Result{}, false, nil
 	}
-	us, err := r.MC.ListUsers(ctx)
-	if err != nil {
-		return ctrl.Result{}, false, fmt.Errorf("unable to list users: %w", err)
-	}
-	if _, ok := us[name]; ok {
-		log.Info("deleting user", "user", name)
-		if err := r.MC.RemoveUser(ctx, name); err != nil {
-			return ctrl.Result{}, false, fmt.Errorf("unable to remove user: %w", err)
-		}
-		r.Rec.Eventf(bucket, "UserDeleted", "User %s deleted", name)
-	}
-	ps, err := r.MC.ListCannedPolicies(ctx)
-	if err != nil {
-		return ctrl.Result{}, false, fmt.Errorf("unable to list policies: %w", err)
-	}
-	if _, ok := ps[name]; ok {
-		log.Info("deleting policy", "policy", name)
-		if err := r.MC.RemoveCannedPolicy(ctx, name); err != nil {
-			return ctrl.Result{}, false, fmt.Errorf("unable to remove policy: %w", err)
-		}
-		r.Rec.Eventf(bucket, "PolicyDeleted", "Policy %s deleted", name)
-	}
 	if bucket.Spec.ReclaimPolicy != s3v1alpha1.BucketReclaimDelete {
 		return ctrl.Result{}, true, nil
 	}
@@ -410,22 +323,17 @@ func (r *BucketReconciler) reconcileDeletion(ctx context.Context, bucket *s3v1al
 	return ctrl.Result{}, true, nil
 }
 
-// SetupWithManager sets up the controller with the Manager.
-func (r *BucketReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&s3v1alpha1.Bucket{}).
-		Owns(&corev1.Secret{}).
-		Complete(r)
-}
-
-func (r *BucketReconciler) name(b *s3v1alpha1.Bucket) string {
-	return prefix + b.Name
-}
-
 func (r *BucketReconciler) err(bucket *s3v1alpha1.Bucket, err error, reason string) error {
 	if err == nil {
 		return nil
 	}
+	meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
+		Type:               s3v1alpha1.BucketConditionReady,
+		Status:             metav1.ConditionFalse,
+		Reason:             "Ready",
+		Message:            "Bucket is not ready",
+		ObservedGeneration: bucket.Generation,
+	})
 	meta.SetStatusCondition(&bucket.Status.Conditions, metav1.Condition{
 		Type:               s3v1alpha1.BucketConditionError,
 		Status:             metav1.ConditionTrue,
@@ -437,6 +345,18 @@ func (r *BucketReconciler) err(bucket *s3v1alpha1.Bucket, err error, reason stri
 	if err2 := r.Status().Update(context.Background(), bucket); err != nil {
 		return multierr.Combine(err, err2)
 	}
-	r.Rec.Warnf(bucket, "BucketError", err.Error())
+	r.Rec.Warn(bucket, "BucketError", err.Error())
 	return err
+}
+
+// SetupWithManager sets up the controller with the Manager.
+func (r *BucketReconciler) SetupWithManager(_ context.Context, mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&s3v1alpha1.Bucket{}).
+		Owns(&corev1.Secret{}).
+		Complete(r)
+}
+
+func name(n string) string {
+	return prefix + n
 }

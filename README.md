@@ -246,8 +246,8 @@ kubectl get buckets -n default
 ```
 
 ```yaml
-NAME            SECRET                RECLAIM   ENDPOINT
-bucket-sample   bucket-sample-creds   Delete    myminio:9000
+NAME            RECLAIM   STATUS   SECRET                AGE
+bucket-sample   Delete    Ready    bucket-sample-creds   2s
 ```
 
 And that the secret has been created:
@@ -272,6 +272,17 @@ MINIO_BUCKET:      13 bytes
 MINIO_ENDPOINT:    18 bytes
 MINIO_SECRET_KEY:  40 bytes
 MINIO_SECURE:      4 bytes
+```
+
+You can get more information about the bucket, like the created minio service account and the endpoint:
+
+```sh
+kubectl get buckets -n default -o wide
+```
+
+```
+NAME            RECLAIM   STATUS   ENDPOINT             SERVICE ACCOUNT   SECRET                AGE
+bucket-sample   Delete    Ready    myminio:9000         bucket-sample     bucket-sample-creds   6s
 ```
 
 We can now create a sample application that uses the bucket.

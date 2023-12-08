@@ -20,9 +20,9 @@ const policy = `{
         {
             "Effect": "Allow",
             "Action": [
-                "s3:ListAllMyBuckets",
+                "s3:ListBucket",
 				"s3:GetBucketLocation",
-                "s3:ListBucket"
+                "s3:ListAllMyBuckets"
             ],
             "Resource": [
                 "arn:aws:s3:::%[1]s"

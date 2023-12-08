@@ -1,0 +1,29 @@
+apiVersion: s3.linka.cloud/v1alpha1
+kind: Bucket
+metadata:
+  labels:
+    app.kubernetes.io/name: bucket
+    app.kubernetes.io/instance: bucket-sample-2
+    app.kubernetes.io/part-of: minio-bucket-controller
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: minio-bucket-controller
+  name: bucket-sample-2
+  namespace: default
+spec:
+  reclaimPolicy: Delete
+  secretName: bucket-sample-creds-2
+  serviceAccount: bucket-sample
+  secretTemplate:
+    config.json: |
+      {
+        "version": "10",
+        "aliases": {
+          "minio": {
+            "url": "http{{ if .Secure }}s{{ end }}://{{ .Endpoint }}",
+            "accessKey": "{{ .AccessKey }}",
+            "secretKey": "{{ .SecretKey }}",
+            "api": "s3v4",
+            "path": "auto"
+          }
+        }
+      }

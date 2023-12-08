@@ -50,3 +50,29 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - s3.linka.cloud
+  resources:
+  - bucketserviceaccounts
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - s3.linka.cloud
+  resources:
+  - bucketserviceaccounts/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - s3.linka.cloud
+  resources:
+  - bucketserviceaccounts/status
+  verbs:
+  - get
+  - patch
+  - update

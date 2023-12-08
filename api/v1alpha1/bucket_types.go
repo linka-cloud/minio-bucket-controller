@@ -44,10 +44,12 @@ const (
 	BucketConditionError    = "Error"
 	BucketConditionDeleting = "Deleting"
 
-	BucketConditionReasonErrCreateBucket = "ErrCreateBucket"
-	BucketConditionReasonErrCreateUser   = "ErrCreateUser"
-	BucketConditionReasonErrCreatePolicy = "ErrCreatePolicy"
-	BucketConditionReasonErrCreateSecret = "ErrCreateSecret"
+	BucketConditionReasonErrCreateBucket         = "ErrCreateBucket"
+	BucketConditionReasonErrCreateServiceAccount = "ErrCreateServiceAccount"
+	BucketConditionReasonErrCreatePolicy         = "ErrCreatePolicy"
+	BucketConditionReasonErrCreateSecret         = "ErrCreateSecret"
+
+	BucketAccessSecretType = "s3.linka.cloud/bucket-access"
 )
 
 type BucketAccess struct {
@@ -60,6 +62,13 @@ type BucketAccess struct {
 
 // BucketSpec defines the desired state of Bucket
 type BucketSpec struct {
+	// ServiceAccount is the name of the service account that should be used for bucket access.
+	// If not specified, a service account with the same name as the bucket will be created.
+	// +optional
+	// +kubebuilder:validation:MinLength=3
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=^[a-z0-9]+[a-z0-9.-]*[a-z0-9]+$
+	ServiceAccount string `json:"serviceAccount,omitempty"`
 	// ReclaimPolicy is the name of the BucketReclaimPolicy to use for this bucket.
 	// +kubebuilder:default:=Retain
 	ReclaimPolicy BucketReclaimPolicy `json:"reclaimPolicy,omitempty"`
@@ -89,6 +98,7 @@ type BucketStatus struct {
 // +kubebuilder:printcolumn:name="Reclaim",type=string,JSONPath=`.spec.reclaimPolicy`
 // +kubebuilder:printcolumn:name="Status",type=string,JSONPath=".status.conditions[-1:].type"
 // +kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=`.status.endpoint`,priority=1
+// +kubebuilder:printcolumn:name="Service Account",type=string,JSONPath=`.spec.serviceAccount`,priority=1
 // +kubebuilder:printcolumn:name="Secret",type=string,JSONPath=`.status.secretName`
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 

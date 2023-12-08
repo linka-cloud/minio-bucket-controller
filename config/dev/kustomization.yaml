@@ -1,0 +1,7 @@
+bases:
+- ../default
+
+images:
+- name: linkacloud/minio-bucket-controller
+  newName: linkacloud/minio-bucket-controller
+  newTag: dev
