@@ -122,6 +122,7 @@ func (r *BucketServiceAccountReconciler) Reconcile(ctx context.Context, req ctrl
 			Message:            "BucketServiceAccount is ready",
 			ObservedGeneration: a.Generation,
 		})
+		a.Status.Phase = s3v1alpha1.BucketSAConditionReady
 		if err := r.Status().Update(ctx, &a); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -225,6 +226,7 @@ func (r *BucketServiceAccountReconciler) reconcilePolicies(ctx context.Context, 
 				Message:            "Service account is not used by any bucket and will be deleted in 1 minute",
 				ObservedGeneration: a.Generation,
 			})
+			a.Status.Phase = s3v1alpha1.BucketSAConditionDeletionPending
 			if err := r.Status().Update(ctx, a); err != nil {
 				return ctrl.Result{}, false, err
 			}
@@ -301,6 +303,7 @@ func (r *BucketServiceAccountReconciler) reconcileDeletion(ctx context.Context, 
 			Message:            "BucketServiceAccount is being deleted",
 			ObservedGeneration: a.Generation,
 		})
+		a.Status.Phase = s3v1alpha1.BucketConditionDeleting
 		if err := r.Status().Update(ctx, a); err != nil {
 			return ctrl.Result{}, false, err
 		}
@@ -348,6 +351,7 @@ func (r *BucketServiceAccountReconciler) err(a *s3v1alpha1.BucketServiceAccount,
 		ObservedGeneration: a.Generation,
 		LastTransitionTime: metav1.Now(),
 	})
+	a.Status.Phase = s3v1alpha1.BucketConditionError
 	if err2 := r.Status().Update(context.Background(), a); err != nil {
 		return multierr.Combine(err, err2)
 	}
@@ -385,6 +389,7 @@ func (r *BucketServiceAccountReconciler) gc(ctx context.Context, freq, ttl time.
 				Message:            "BucketServiceAccount is being deleted",
 				ObservedGeneration: v.Generation,
 			})
+			v.Status.Phase = s3v1alpha1.BucketConditionDeleting
 			if err := r.Status().Update(ctx, &v); err != nil {
 				log.Error(err, "unable to update BucketServiceAccount")
 				continue

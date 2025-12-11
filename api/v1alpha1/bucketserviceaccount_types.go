@@ -39,11 +39,12 @@ type BucketServiceAccountStatus struct {
 	SecretName *string `json:"secretName,omitempty"`
 	// Conditions represent the latest available observations of a BucketServiceAccount's current state.
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	Phase      string             `json:"phase,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=".status.conditions[-1:].type"
+// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Secret",type=string,JSONPath=`.status.secretName`
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 

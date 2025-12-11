@@ -91,12 +91,13 @@ type BucketStatus struct {
 	// +optional
 	SecretName *string            `json:"secretName,omitempty"`
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	Phase      string             `json:"phase,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Reclaim",type=string,JSONPath=`.spec.reclaimPolicy`
-// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=".status.conditions[-1:].type"
+// +kubebuilder:printcolumn:name="Status",type=string,JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Endpoint",type=string,JSONPath=`.status.endpoint`,priority=1
 // +kubebuilder:printcolumn:name="Service Account",type=string,JSONPath=`.spec.serviceAccount`,priority=1
 // +kubebuilder:printcolumn:name="Secret",type=string,JSONPath=`.status.secretName`

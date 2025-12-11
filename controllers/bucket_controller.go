@@ -113,6 +113,7 @@ func (r *BucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			Message:            "Bucket is being created",
 			ObservedGeneration: bucket.Generation,
 		})
+		bucket.Status.Phase = s3v1alpha1.BucketConditionCreating
 		if err := r.Status().Update(ctx, &bucket); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -138,6 +139,7 @@ func (r *BucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			Message:            "Bucket is ready",
 			ObservedGeneration: bucket.Generation,
 		})
+		bucket.Status.Phase = s3v1alpha1.BucketConditionReady
 		if err := r.Status().Update(ctx, &bucket); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -238,6 +240,7 @@ func (r *BucketReconciler) reconcileSecret(ctx context.Context, bucket *s3v1alph
 	}
 	s2 := secret.DeepCopy()
 	s2.Type = s3v1alpha1.BucketAccessSecretType
+	s2.Labels = bucket.Labels
 	var as corev1.Secret
 	if err := r.Get(ctx, types.NamespacedName{Name: bucket.Spec.ServiceAccount + saSecretSuffix, Namespace: bucket.Namespace}, &as); err != nil {
 		log.Error(err, "failed to get service account secret")
@@ -306,6 +309,7 @@ func (r *BucketReconciler) reconcileDeletion(ctx context.Context, bucket *s3v1al
 			Message:            "Bucket is being deleted",
 			ObservedGeneration: bucket.Generation,
 		})
+		bucket.Status.Phase = s3v1alpha1.BucketConditionDeleting
 		if err := r.Status().Update(ctx, bucket); err != nil {
 			return ctrl.Result{}, false, fmt.Errorf("unable to update bucket status: %w", err)
 		}
@@ -342,6 +346,7 @@ func (r *BucketReconciler) err(bucket *s3v1alpha1.Bucket, err error, reason stri
 		ObservedGeneration: bucket.Generation,
 		LastTransitionTime: metav1.Now(),
 	})
+	bucket.Status.Phase = s3v1alpha1.BucketConditionError
 	if err2 := r.Status().Update(context.Background(), bucket); err != nil {
 		return multierr.Combine(err, err2)
 	}
