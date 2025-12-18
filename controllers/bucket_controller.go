@@ -347,7 +347,7 @@ func (r *BucketReconciler) err(bucket *s3v1alpha1.Bucket, err error, reason stri
 		LastTransitionTime: metav1.Now(),
 	})
 	bucket.Status.Phase = s3v1alpha1.BucketConditionError
-	if err2 := r.Status().Update(context.Background(), bucket); err != nil {
+	if err2 := r.Status().Update(context.Background(), bucket); err2 != nil {
 		return multierr.Combine(err, err2)
 	}
 	r.Rec.Warn(bucket, "BucketError", err.Error())

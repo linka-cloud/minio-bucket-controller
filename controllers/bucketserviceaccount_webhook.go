@@ -3,6 +3,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -29,7 +30,7 @@ func (r *BucketServiceAccountReconciler) ValidateCreate(ctx context.Context, obj
 	if err != nil {
 		return apierrors.NewInternalError(err)
 	}
-	if req.UserInfo.Username != r.ServiceAccount {
+	if !r.allowed(req.UserInfo.Username) {
 		return apierrors.NewForbidden(s3v1alpha1.GroupVersion.WithResource("bucketserviceaccounts").GroupResource(), o.GetObjectMeta().GetName(), fmt.Errorf("user %s is not allowed to create service account", req.UserInfo.Username))
 	}
 	switch o := o.(type) {
@@ -60,7 +61,7 @@ func (r *BucketServiceAccountReconciler) ValidateUpdate(ctx context.Context, o, 
 	if err != nil {
 		return apierrors.NewInternalError(err)
 	}
-	if req.UserInfo.Username != r.ServiceAccount {
+	if !r.allowed(req.UserInfo.Username) {
 		return apierrors.NewForbidden(s3v1alpha1.GroupVersion.WithResource("bucketserviceaccounts").GroupResource(), a.GetObjectMeta().GetName(), fmt.Errorf("user %s is not allowed to update bucket service account", req.UserInfo.Username))
 	}
 	return nil
@@ -76,7 +77,7 @@ func (r *BucketServiceAccountReconciler) ValidateDelete(ctx context.Context, obj
 	if err != nil {
 		return apierrors.NewInternalError(err)
 	}
-	if req.UserInfo.Username != r.ServiceAccount {
+	if !r.allowed(req.UserInfo.Username) {
 		return apierrors.NewForbidden(s3v1alpha1.GroupVersion.WithResource("bucketserviceaccounts").GroupResource(), a.GetObjectMeta().GetName(), fmt.Errorf("user %s is not allowed to deleta bucket service account", req.UserInfo.Username))
 	}
 	return nil
@@ -95,4 +96,8 @@ func (r *BucketServiceAccountReconciler) SetupWebhookWithManager(_ context.Conte
 		For(&corev1.Secret{}).
 		WithValidator(r).
 		Complete()
+}
+
+func (r *BucketServiceAccountReconciler) allowed(name string) bool {
+	return name == r.ServiceAccount || strings.HasPrefix(name, "system:serviceaccount:kube-system:")
 }
