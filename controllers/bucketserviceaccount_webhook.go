@@ -9,6 +9,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	log2 "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -36,8 +37,21 @@ func (r *BucketServiceAccountReconciler) ValidateCreate(ctx context.Context, obj
 	switch o := o.(type) {
 	case *s3v1alpha1.BucketServiceAccount:
 		log.Info("validate create", "user", req.UserInfo.Username)
-		// TODO(adphi): prevent user to create service account
-		us, err := r.MC.ListUsers(ctx)
+		if o.Spec.Provider == "" {
+			return apierrors.NewBadRequest("provider is required")
+		}
+		var p s3v1alpha1.BucketProvider
+		if err := r.Get(ctx, types.NamespacedName{Name: o.Spec.Provider}, &p); err != nil {
+			if apierrors.IsNotFound(err) {
+				return apierrors.NewNotFound(s3v1alpha1.GroupVersion.WithResource("bucketproviders").GroupResource(), o.Spec.Provider)
+			}
+			return err
+		}
+		mc, err := newClient(ctx, r.Client, p)
+		if err != nil {
+			return apierrors.NewInternalError(fmt.Errorf("unable to create minio client: %w", err))
+		}
+		us, err := mc.ListUsers(ctx)
 		if err != nil {
 			return apierrors.NewInternalError(fmt.Errorf("unable to list users: %w", err))
 		}

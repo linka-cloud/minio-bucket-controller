@@ -4,33 +4,19 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: buckets.s3.linka.cloud
+  name: bucketproviders.s3.linka.cloud
 spec:
   group: s3.linka.cloud
   names:
-    kind: Bucket
-    listKind: BucketList
-    plural: buckets
-    singular: bucket
-  scope: Namespaced
+    kind: BucketProvider
+    listKind: BucketProviderList
+    plural: bucketproviders
+    singular: bucketprovider
+  scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.reclaimPolicy
-      name: Reclaim
-      type: string
     - jsonPath: .status.phase
       name: Status
-      type: string
-    - jsonPath: .status.endpoint
-      name: Endpoint
-      priority: 1
-      type: string
-    - jsonPath: .spec.serviceAccount
-      name: Service Account
-      priority: 1
-      type: string
-    - jsonPath: .status.secretName
-      name: Secret
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
@@ -38,16 +24,7 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: |-
-          Bucket is the Schema for the buckets API
-          The controller will try to create a bucket with the same name as the Bucket resource,
-          it will also create a user and the policy giving read/write access to the bucket.
-          It will then create a secret with the credentials the user's service account credentials:
-          MINIO_ACCESS_KEY: the account's access key
-          MINIO_SECRET_KEY: the account's secret key
-          MINIO_ENDPOINT: the endpoint of the minio server
-          MINIO_BUCKET: the name of the bucket
-          MINIO_SECURE: whether the connection to the minio server should be secure
+        description: BucketProvider is the Schema for the bucketproviders API
         properties:
           apiVersion:
             description: |-
@@ -67,47 +44,61 @@ spec:
           metadata:
             type: object
           spec:
-            description: BucketSpec defines the desired state of Bucket
+            description: BucketProviderSpec defines the desired state of BucketProvider
             properties:
-              provider:
-                description: Provider is the name of the BucketProvider to use for
-                  this bucket.
-                type: string
-              reclaimPolicy:
-                default: Retain
-                description: ReclaimPolicy is the name of the BucketReclaimPolicy
-                  to use for this bucket.
-                enum:
-                - Delete
-                - Retain
-                type: string
-              secretName:
-                description: SecretName is the name of the secret containing the credentials
-                  to access the bucket that should be created.
-                maxLength: 253
-                minLength: 3
-                pattern: ^[a-z0-9]+[a-z0-9.-]*[a-z0-9]+$
-                type: string
-              secretTemplate:
-                additionalProperties:
-                  type: string
-                description: |-
-                  SecretTemplate is the template for the secret containing the credentials to access the bucket that should be created.
-                  The templates takes a BucketAccess struct as input.
+              accessKey:
+                description: AccessKey is a reference to a secret containing the access
+                  key
+                properties:
+                  key:
+                    description: Key is the key of the secret
+                    type: string
+                  name:
+                    description: Name is the name of the secret
+                    type: string
+                  namespace:
+                    description: Namespace is the namespace of the secret
+                    type: string
+                required:
+                - key
+                - name
+                - namespace
                 type: object
-              serviceAccount:
-                description: |-
-                  ServiceAccount is the name of the service account that should be used for bucket access.
-                  If not specified, a service account with the same name as the bucket will be created.
-                maxLength: 253
-                minLength: 3
-                pattern: ^[a-z0-9]+[a-z0-9.-]*[a-z0-9]+$
+              endpoint:
+                description: Endpoint is the S3 endpoint of the bucket provider
                 type: string
+              insecure:
+                description: Insecure indicates whether to use insecure connection
+                type: boolean
+              secretKey:
+                description: SecretKey is a reference to a secret containing the secret
+                  key
+                properties:
+                  key:
+                    description: Key is the key of the secret
+                    type: string
+                  name:
+                    description: Name is the name of the secret
+                    type: string
+                  namespace:
+                    description: Namespace is the namespace of the secret
+                    type: string
+                required:
+                - key
+                - name
+                - namespace
+                type: object
+            required:
+            - accessKey
+            - endpoint
+            - secretKey
             type: object
           status:
-            description: BucketStatus defines the observed state of Bucket
+            description: BucketProviderStatus defines the observed state of BucketProvider
             properties:
               conditions:
+                description: Conditions represent the latest available observations
+                  of a BucketProvider's current state.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -163,11 +154,8 @@ spec:
                   - type
                   type: object
                 type: array
-              endpoint:
-                type: string
               phase:
-                type: string
-              secretName:
+                description: Phase represents the current phase of the BucketProvider
                 type: string
             type: object
         type: object

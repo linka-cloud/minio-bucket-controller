@@ -62,6 +62,9 @@ type BucketAccess struct {
 
 // BucketSpec defines the desired state of Bucket
 type BucketSpec struct {
+	// Provider is the name of the BucketProvider to use for this bucket.
+	// +optional
+	Provider string `json:"provider,omitempty"`
 	// ServiceAccount is the name of the service account that should be used for bucket access.
 	// If not specified, a service account with the same name as the bucket will be created.
 	// +optional

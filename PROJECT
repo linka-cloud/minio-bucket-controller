@@ -34,4 +34,15 @@ resources:
     defaulting: true
     validation: true
     webhookVersion: v1
+- api:
+    crdVersion: v1
+  controller: true
+  domain: linka.cloud
+  group: s3
+  kind: BucketProvider
+  path: go.linka.cloud/minio-bucket-controller/api/v1alpha1
+  version: v1alpha1
+  webhooks:
+    validation: true
+    webhookVersion: v1
 version: "3"

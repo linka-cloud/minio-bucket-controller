@@ -1,0 +1,32 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: minio-credentials
+  namespace: default
+stringData:
+  accessKey: minioadmin
+  secretKey: minioadmin
+---
+apiVersion: s3.linka.cloud/v1alpha1
+kind: BucketProvider
+metadata:
+  name: bucketprovider-sample
+  labels:
+    app.kubernetes.io/name: bucketprovider
+    app.kubernetes.io/instance: bucketprovider-sample
+    app.kubernetes.io/part-of: minio-bucket-controller
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: minio-bucket-controller
+  annotations:
+
+spec:
+  endpoint: 127.0.0.1:9000
+  insecure: true
+  accessKey:
+    name: minio-credentials
+    namespace: default
+    key: accesskey
+  secretKey:
+    name: minio-credentials
+    namespace: default
+    key: secretkey

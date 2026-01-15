@@ -34,6 +34,10 @@ const (
 	ServiceAccountAnnotation = "s3.linka.cloud/service-account"
 )
 
+type BucketServiceAccountSpec struct {
+	Provider string `json:"provider,omitempty"`
+}
+
 // BucketServiceAccountStatus defines the observed state of BucketServiceAccount
 type BucketServiceAccountStatus struct {
 	SecretName *string `json:"secretName,omitempty"`
@@ -53,6 +57,7 @@ type BucketServiceAccount struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
+	Spec   BucketServiceAccountSpec   `json:"spec,omitempty"`
 	Status BucketServiceAccountStatus `json:"status,omitempty"`
 }
 

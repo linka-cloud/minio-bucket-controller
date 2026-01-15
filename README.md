@@ -172,9 +172,17 @@ mc admin user svcacct edit myminio <ACCESS_KEY> --policy policy.json
 kubectl apply -f https://raw.githubusercontent.com/linka-cloud/minio-bucket-controller/main/deploy/manifests.yaml
 ```
 
-The controller will not be created as it requires a secret named **minio-bucket-controller-credentials** with the MinIO credentials.
+The controller should soon be running:
 
-Create the secret containing the credentials:
+```sh
+kubectl get po -n minio-bucket-controller-system 
+```
+```
+NAME                                                          READY   STATUS    RESTARTS   AGE
+minio-bucket-controller-controller-manager-857dd9d7ff-279n6   2/2     Running   0          12m
+```
+
+Create the BucketProvider and the secret containing the credentials:
 
 ```sh
 cat <<EOF | kubectl apply -f -
@@ -186,20 +194,26 @@ metadata:
 stringData:
   MINIO_ACCESS_KEY: $MINIO_ACCESS_KEY
   MINIO_SECRET_KEY: $MINIO_SECRET_KEY
-  MINIO_ENDPOINT: $MINIO_ENDPOINT
+---
+apiVersion: s3.linka.cloud/v1alpha1
+kind: BucketProvider
+metadata:
+  name: my-bucket-provider
+  annotations:
+    s3.linka.cloud/is-default-provider: ""
+spec:
+  endpoint: $MINIO_ENDPOINT
   # uncomment if you don't use tls
-  # MINIO_INSECURE: "true"
+  # insecure: true
+  accessKey:
+    name: minio-bucket-controller-credentials
+    namespace: minio-bucket-controller-system
+    key: MINIO_ACCESS_KEY
+  secretKey:
+    name: minio-bucket-controller-credentials
+    namespace: minio-bucket-controller-system
+    key: MINIO_SECRET_KEY
 EOF
-```
-
-The controller should soon be running:
-
-```sh
-kubectl get po -n minio-bucket-controller-system 
-```
-```
-NAME                                                          READY   STATUS    RESTARTS   AGE
-minio-bucket-controller-controller-manager-857dd9d7ff-279n6   2/2     Running   0          12m
 ```
 
 #### Create a sample bucket and a sample application

@@ -26,6 +26,7 @@ import (
 	"go.uber.org/multierr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -49,7 +50,6 @@ const (
 type BucketReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
-	MC     *mc.Client
 	Rec    recorder.Recorder
 }
 
@@ -90,6 +90,20 @@ func (r *BucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 		return ctrl.Result{}, nil
 	}
+	if bucket.Spec.Provider == "" {
+		d, ok, err := defaultProvider(ctx, r.Client)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !ok {
+			return ctrl.Result{}, r.err(&bucket, fmt.Errorf("no default bucket provider set"), s3v1alpha1.ErrProviderInvalid)
+		}
+		bucket.Spec.Provider = d.Name
+		if err := r.Update(ctx, &bucket); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
 	if bucket.Spec.SecretName == nil {
 		n := fmt.Sprintf("%s-bucket-credentials", bucket.Name)
 		bucket.Spec.SecretName = &n
@@ -120,13 +134,24 @@ func (r *BucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		r.Rec.Eventf(&bucket, "BucketCreating", "Bucket %s is being created", bucket.Name)
 		return ctrl.Result{}, nil
 	}
+	var p s3v1alpha1.BucketProvider
+	if err := r.Get(ctx, types.NamespacedName{Name: bucket.Spec.Provider}, &p); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, r.err(&bucket, fmt.Errorf("referenced bucket provider %s not found", bucket.Spec.Provider), s3v1alpha1.ErrProviderInvalid)
+		}
+		return ctrl.Result{}, err
+	}
+	mc, err := newClient(ctx, r.Client, p)
+	if err != nil {
+		return ctrl.Result{}, r.err(&bucket, fmt.Errorf("unable to create minio client: %w", err), s3v1alpha1.ErrProviderInvalid)
+	}
 	if re, ok, err := r.reconcileServiceAccount(ctx, &bucket); !ok {
 		return re, r.err(&bucket, err, s3v1alpha1.BucketConditionReasonErrCreateServiceAccount)
 	}
-	if re, ok, err := r.reconcileBucket(ctx, &bucket); !ok {
+	if re, ok, err := r.reconcileBucket(ctx, mc, &bucket); !ok {
 		return re, r.err(&bucket, err, s3v1alpha1.BucketConditionReasonErrCreateBucket)
 	}
-	if re, ok, err := r.reconcileSecret(ctx, &bucket); !ok {
+	if re, ok, err := r.reconcileSecret(ctx, mc, &bucket); !ok {
 		return re, r.err(&bucket, err, s3v1alpha1.BucketConditionReasonErrCreateSecret)
 	}
 	if !meta.IsStatusConditionTrue(bucket.Status.Conditions, s3v1alpha1.BucketConditionReady) {
@@ -148,10 +173,10 @@ func (r *BucketReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	return ctrl.Result{}, nil
 }
 
-func (r *BucketReconciler) reconcileBucket(ctx context.Context, bucket *s3v1alpha1.Bucket) (ctrl.Result, bool, error) {
+func (r *BucketReconciler) reconcileBucket(ctx context.Context, mc *mc.Client, bucket *s3v1alpha1.Bucket) (ctrl.Result, bool, error) {
 	log := log.FromContext(ctx)
 	log.Info("reconciling bucket")
-	ok, err := r.MC.BucketExists(ctx, bucket.Name)
+	ok, err := mc.BucketExists(ctx, bucket.Name)
 	if err != nil {
 		return ctrl.Result{}, false, fmt.Errorf("unable to check if bucket exists: %w", err)
 	}
@@ -163,14 +188,14 @@ func (r *BucketReconciler) reconcileBucket(ctx context.Context, bucket *s3v1alph
 		return ctrl.Result{}, true, nil
 	}
 	log.Info("creating bucket")
-	if err := r.MC.MakeBucket(ctx, bucket.Name, minio.MakeBucketOptions{}); err != nil {
+	if err := mc.MakeBucket(ctx, bucket.Name, minio.MakeBucketOptions{}); err != nil {
 		return ctrl.Result{}, false, fmt.Errorf("unable to create bucket: %w", err)
 	}
-	e := r.MC.Endpoint()
+	e := mc.Endpoint()
 	bucket.Status.Endpoint = &e
 	log.Info("updating bucket endpoint status")
 	if err := r.Status().Update(ctx, bucket); err != nil {
-		return ctrl.Result{}, false, multierr.Combine(fmt.Errorf("unable to update bucket status: %w", err), r.MC.RemoveBucket(ctx, bucket.Name))
+		return ctrl.Result{}, false, multierr.Combine(fmt.Errorf("unable to update bucket status: %w", err), mc.RemoveBucket(ctx, bucket.Name))
 	}
 	r.Rec.Eventf(bucket, "BucketCreated", "Bucket %s created", bucket.Name)
 	return ctrl.Result{}, false, nil
@@ -188,6 +213,9 @@ func (r *BucketReconciler) reconcileServiceAccount(ctx context.Context, bucket *
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      bucket.Spec.ServiceAccount,
 				Namespace: bucket.Namespace,
+			},
+			Spec: s3v1alpha1.BucketServiceAccountSpec{
+				Provider: bucket.Spec.Provider,
 			},
 		}
 		if err := r.Create(ctx, &sa); err != nil {
@@ -207,7 +235,7 @@ func (r *BucketReconciler) reconcileServiceAccount(ctx context.Context, bucket *
 	return ctrl.Result{}, false, nil
 }
 
-func (r *BucketReconciler) reconcileSecret(ctx context.Context, bucket *s3v1alpha1.Bucket) (ctrl.Result, bool, error) {
+func (r *BucketReconciler) reconcileSecret(ctx context.Context, mc *mc.Client, bucket *s3v1alpha1.Bucket) (ctrl.Result, bool, error) {
 	log := log.FromContext(ctx)
 	log.Info("reconciling secret")
 	name := name(bucket.Name)
@@ -250,15 +278,15 @@ func (r *BucketReconciler) reconcileSecret(ctx context.Context, bucket *s3v1alph
 		Bucket:    bucket.Name,
 		AccessKey: string(as.Data[s3v1alpha1.MinioAccessKey]),
 		SecretKey: string(as.Data[s3v1alpha1.MinioSecretKey]),
-		Endpoint:  r.MC.Endpoint(),
-		Secure:    r.MC.Secure(),
+		Endpoint:  mc.Endpoint(),
+		Secure:    mc.Secure(),
 	}
 	s2.Data = map[string][]byte{
 		s3v1alpha1.MinioBucket:    []byte(bucket.Name),
 		s3v1alpha1.MinioAccessKey: as.Data[s3v1alpha1.MinioAccessKey],
 		s3v1alpha1.MinioSecretKey: as.Data[s3v1alpha1.MinioSecretKey],
-		s3v1alpha1.MinioEndpoint:  []byte(r.MC.Endpoint()),
-		s3v1alpha1.MinioSecure:    []byte(strconv.FormatBool(r.MC.Secure())),
+		s3v1alpha1.MinioEndpoint:  []byte(mc.Endpoint()),
+		s3v1alpha1.MinioSecure:    []byte(strconv.FormatBool(mc.Secure())),
 	}
 	for k, v := range bucket.Spec.SecretTemplate {
 		tmp, err := template.New("secret").Parse(v)
@@ -272,7 +300,7 @@ func (r *BucketReconciler) reconcileSecret(ctx context.Context, bucket *s3v1alph
 		s2.Data[k] = buf.Bytes()
 	}
 	if err := ctrl.SetControllerReference(bucket, s2, r.Scheme); err != nil {
-		return ctrl.Result{}, false, multierr.Combine(fmt.Errorf("unable to set controller reference: %w", err), r.MC.DeleteServiceAccount(ctx, name))
+		return ctrl.Result{}, false, multierr.Combine(fmt.Errorf("unable to set controller reference: %w", err), mc.DeleteServiceAccount(ctx, name))
 	}
 	if equality.Semantic.DeepEqual(secret, s2) {
 		return ctrl.Result{}, true, nil
@@ -287,12 +315,12 @@ func (r *BucketReconciler) reconcileSecret(ctx context.Context, bucket *s3v1alph
 	}
 	log.Info("creating secret")
 	if err := r.Create(ctx, s2); err != nil {
-		return ctrl.Result{}, false, multierr.Combine(fmt.Errorf("unable to create secret: %w", err), r.MC.DeleteServiceAccount(ctx, name))
+		return ctrl.Result{}, false, multierr.Combine(fmt.Errorf("unable to create secret: %w", err), mc.DeleteServiceAccount(ctx, name))
 	}
 	bucket.Status.SecretName = &s2.Name
 	log.Info("updating bucket status")
 	if err := r.Status().Update(ctx, bucket); err != nil {
-		return ctrl.Result{}, false, multierr.Combine(fmt.Errorf("unable to update bucket status: %w", err), r.Delete(ctx, &secret), r.MC.DeleteServiceAccount(ctx, name))
+		return ctrl.Result{}, false, multierr.Combine(fmt.Errorf("unable to update bucket status: %w", err), r.Delete(ctx, &secret), mc.DeleteServiceAccount(ctx, name))
 	}
 	r.Rec.Eventf(bucket, "SecretCreated", "Secret %s created", secret.Name)
 	return ctrl.Result{}, true, nil
@@ -316,11 +344,23 @@ func (r *BucketReconciler) reconcileDeletion(ctx context.Context, bucket *s3v1al
 		r.Rec.Eventf(bucket, "BucketDeleting", "Bucket %s is being deleted", bucket.Name)
 		return ctrl.Result{}, false, nil
 	}
+	var p s3v1alpha1.BucketProvider
+	if err := r.Get(ctx, types.NamespacedName{Name: bucket.Spec.Provider}, &p); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Info("bucket provider not found, skipping bucket deletion")
+			return ctrl.Result{}, true, nil
+		}
+		return ctrl.Result{}, false, fmt.Errorf("unable to get bucket provider: %w", err)
+	}
+	mc, err := newClient(ctx, r.Client, p)
+	if err != nil {
+		return ctrl.Result{}, false, fmt.Errorf("unable to create minio client: %w", err)
+	}
 	if bucket.Spec.ReclaimPolicy != s3v1alpha1.BucketReclaimDelete {
 		return ctrl.Result{}, true, nil
 	}
 	log.Info("deleting bucket")
-	if err := r.MC.RemoveBucketWithOptions(ctx, bucket.Name, minio.RemoveBucketOptions{ForceDelete: true}); err != nil {
+	if err := mc.RemoveBucketWithOptions(ctx, bucket.Name, minio.RemoveBucketOptions{ForceDelete: true}); err != nil {
 		return ctrl.Result{}, false, fmt.Errorf("unable to remove bucket: %w", err)
 	}
 	r.Rec.Eventf(bucket, "BucketDeleted", "Bucket %s deleted", bucket.Name)

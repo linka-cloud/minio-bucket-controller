@@ -56,6 +56,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-s3-linka-cloud-v1alpha1-bucketprovider
+  failurePolicy: Fail
+  name: vbucketprovider.kb.io
+  rules:
+  - apiGroups:
+    - s3.linka.cloud
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - bucketproviders
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate-s3-linka-cloud-v1alpha1-bucketserviceaccount
   failurePolicy: Fail
   name: vbucketserviceaccount.kb.io

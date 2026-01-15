@@ -25,7 +25,7 @@ Dockerfile.cross
 *.swo
 *~
 .idea
-deploy/secret.yaml
+deploy/provider-secret.yaml
 .creds
 config/local
 certs

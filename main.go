@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"os"
 	"strings"
@@ -37,7 +38,6 @@ import (
 
 	s3v1alpha1 "go.linka.cloud/minio-bucket-controller/api/v1alpha1"
 	"go.linka.cloud/minio-bucket-controller/controllers"
-	mc2 "go.linka.cloud/minio-bucket-controller/pkg/mc"
 	"go.linka.cloud/minio-bucket-controller/pkg/recorder"
 	// +kubebuilder:scaffold:imports
 )
@@ -56,23 +56,19 @@ func init() {
 
 func main() {
 	var (
-		metricsAddr                    string
-		enableLeaderElection           bool
-		probeAddr                      string
-		endpoint, accessKey, secretKey string
-		insecure                       bool
-		certs                          string
+		metricsAddr          string
+		enableLeaderElection bool
+		probeAddr            string
+		certs                string
+		serviceAccount       string
 	)
-	flag.StringVar(&endpoint, "endpoint", os.Getenv(s3v1alpha1.MinioEndpoint), "The Minio endpoint [$"+s3v1alpha1.MinioEndpoint+"]")
-	flag.StringVar(&accessKey, "access-key", os.Getenv(s3v1alpha1.MinioAccessKey), "The Minio access key [$"+s3v1alpha1.MinioAccessKey+"]")
-	flag.StringVar(&secretKey, "secret-key", os.Getenv(s3v1alpha1.MinioSecretKey), "The Minio secret key [$"+s3v1alpha1.MinioSecretKey+"]")
-	flag.BoolVar(&insecure, "insecure", os.Getenv("MINIO_INSECURE") != "", "Whether to use insecure connection [$MINIO_INSECURE]")
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.StringVar(&certs, "certs", "", "The directory where the TLS certs are stored")
+	flag.StringVar(&serviceAccount, "service-account", "", "The service account name (if not set, will be extracted from the client cert or token)")
 	flag.Parse()
 
 	ctrl.SetLogger(logger.StandardLogger().Logr())
@@ -80,19 +76,12 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	mc, err := mc2.New(endpoint, accessKey, secretKey, !insecure)
-	if err != nil {
-		setupLog.Error(err, "unable to create minio client")
-		os.Exit(1)
-	}
-
 	cfg := ctrl.GetConfigOrDie()
-	var serviceAccount string
 	switch {
 	case cfg.CertData != nil:
 		b, _ := pem.Decode(cfg.CertData)
 		if b == nil {
-			setupLog.Error(err, "unable to decode cert data")
+			setupLog.Error(errors.New("invalid cert"), "unable to decode cert data")
 			os.Exit(1)
 		}
 		cert, err := x509.ParseCertificate(b.Bytes)
@@ -104,7 +93,7 @@ func main() {
 	case cfg.BearerToken != "":
 		parts := strings.Split(cfg.BearerToken, ".")
 		if len(parts) != 3 {
-			setupLog.Error(err, "unable to parse bearer token")
+			setupLog.Error(errors.New("invalid bearer token"), "unable to parse bearer token")
 			os.Exit(1)
 		}
 		b, err := base64.RawStdEncoding.DecodeString(parts[1])
@@ -121,29 +110,21 @@ func main() {
 			os.Exit(1)
 		}
 		serviceAccount = h.Subject
+	case serviceAccount != "":
+		// use provided service account
 	default:
-		setupLog.Error(err, "unable to find service account")
+		setupLog.Error(errors.New("service account missing"), "unable to find service account")
 		os.Exit(1)
 	}
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme:                 scheme,
-		MetricsBindAddress:     metricsAddr,
-		Port:                   9443,
-		HealthProbeBindAddress: probeAddr,
-		CertDir:                certs,
-		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "58e2baca.linka.cloud",
-		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
-		// when the Manager ends. This requires the binary to immediately end when the
-		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
-		// speeds up voluntary leader transitions as the new leader don't have to wait
-		// LeaseDuration time first.
-		//
-		// In the default scaffold provided, the program ends immediately after
-		// the manager stops, so would be fine to enable this option. However,
-		// if you are doing or is intended to do any operation such as perform cleanups
-		// after the manager stops then its usage might be unsafe.
-		// LeaderElectionReleaseOnCancel: true,
+		Scheme:                        scheme,
+		MetricsBindAddress:            metricsAddr,
+		Port:                          9443,
+		HealthProbeBindAddress:        probeAddr,
+		CertDir:                       certs,
+		LeaderElection:                enableLeaderElection,
+		LeaderElectionID:              "58e2baca.linka.cloud",
+		LeaderElectionReleaseOnCancel: true,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -153,7 +134,6 @@ func main() {
 	br := &controllers.BucketReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-		MC:     mc,
 		Rec:    recorder.New(mgr.GetEventRecorderFor("bucket-controller")),
 	}
 
@@ -168,7 +148,6 @@ func main() {
 	bsar := &controllers.BucketServiceAccountReconciler{
 		Client:         mgr.GetClient(),
 		Scheme:         mgr.GetScheme(),
-		MC:             mc,
 		Rec:            recorder.New(mgr.GetEventRecorderFor("bucket-service-account-controller")),
 		ServiceAccount: serviceAccount,
 	}
@@ -178,6 +157,19 @@ func main() {
 	}
 	if err = bsar.SetupWebhookWithManager(ctx, mgr); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "BucketServiceAccount")
+		os.Exit(1)
+	}
+	bpr := &controllers.BucketProviderReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		Rec:    recorder.New(mgr.GetEventRecorderFor("bucket-provider-controller")),
+	}
+	if err = bpr.SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "BucketProvider")
+		os.Exit(1)
+	}
+	if err = bpr.SetupWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "BucketProvider")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

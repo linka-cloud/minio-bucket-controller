@@ -1,0 +1,27 @@
+# permissions for end users to view bucketproviders.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: clusterrole
+    app.kubernetes.io/instance: bucketprovider-viewer-role
+    app.kubernetes.io/component: rbac
+    app.kubernetes.io/created-by: minio-bucket-controller
+    app.kubernetes.io/part-of: minio-bucket-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: bucketprovider-viewer-role
+rules:
+- apiGroups:
+  - s3.linka.cloud
+  resources:
+  - bucketproviders
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - s3.linka.cloud
+  resources:
+  - bucketproviders/status
+  verbs:
+  - get

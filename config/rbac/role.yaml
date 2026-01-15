@@ -26,6 +26,7 @@ rules:
 - apiGroups:
   - s3.linka.cloud
   resources:
+  - bucketproviders
   - buckets
   - bucketserviceaccounts
   verbs:
@@ -39,6 +40,7 @@ rules:
 - apiGroups:
   - s3.linka.cloud
   resources:
+  - bucketproviders/finalizers
   - buckets/finalizers
   - bucketserviceaccounts/finalizers
   verbs:
@@ -46,6 +48,7 @@ rules:
 - apiGroups:
   - s3.linka.cloud
   resources:
+  - bucketproviders/status
   - buckets/status
   - bucketserviceaccounts/status
   verbs:

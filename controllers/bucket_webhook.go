@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"text/template"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	s3v1alpha1 "go.linka.cloud/minio-bucket-controller/api/v1alpha1"
@@ -24,6 +26,17 @@ func (r *BucketReconciler) Default(ctx context.Context, obj runtime.Object) erro
 	if !ok {
 		return fmt.Errorf("expected a Bucket but got a %T", obj)
 	}
+	if bucket.Spec.Provider == "" {
+		d, ok, err := defaultProvider(ctx, r.Client)
+		if err != nil {
+			return err
+		}
+		if ok {
+			bucket.Spec.Provider = d.Name
+		} else {
+			return fmt.Errorf("no default BucketProvider found; please specify a provider")
+		}
+	}
 	if bucket.Spec.ReclaimPolicy == "" {
 		bucket.Spec.ReclaimPolicy = s3v1alpha1.BucketReclaimRetain
 	}
@@ -37,10 +50,17 @@ func (r *BucketReconciler) Default(ctx context.Context, obj runtime.Object) erro
 	return nil
 }
 
-func (r *BucketReconciler) ValidateCreate(_ context.Context, obj runtime.Object) error {
+func (r *BucketReconciler) ValidateCreate(ctx context.Context, obj runtime.Object) error {
 	bucket, ok := obj.(*s3v1alpha1.Bucket)
 	if !ok {
 		return fmt.Errorf("expected a Bucket but got a %T", obj)
+	}
+	var p s3v1alpha1.BucketProvider
+	if err := r.Get(ctx, client.ObjectKey{Name: bucket.Spec.Provider}, &p); err != nil {
+		if apierrors.IsNotFound(err) {
+			return field.Invalid(field.NewPath("spec", "provider"), bucket.Spec.Provider, "referenced BucketProvider not found")
+		}
+		return err
 	}
 	if err := validateTemplate(bucket.Spec.SecretTemplate); err != nil {
 		return field.Invalid(field.NewPath("spec", "secretTemplate"), bucket.Spec.SecretTemplate, err.Error())
@@ -49,9 +69,23 @@ func (r *BucketReconciler) ValidateCreate(_ context.Context, obj runtime.Object)
 }
 
 func (r *BucketReconciler) ValidateUpdate(ctx context.Context, o, n runtime.Object) error {
+	old, ok := o.(*s3v1alpha1.Bucket)
+	if !ok {
+		return fmt.Errorf("expected a Bucket but got a %T", o)
+	}
 	bucket, ok := n.(*s3v1alpha1.Bucket)
 	if !ok {
 		return fmt.Errorf("expected a Bucket but got a %T", n)
+	}
+	if old.Spec.Provider != "" && old.Spec.Provider != bucket.Spec.Provider {
+		return field.Invalid(field.NewPath("spec", "provider"), bucket.Spec.Provider, "cannot change provider once set")
+	}
+	var p s3v1alpha1.BucketProvider
+	if err := r.Get(ctx, client.ObjectKey{Name: bucket.Spec.Provider}, &p); err != nil {
+		if apierrors.IsNotFound(err) {
+			return field.Invalid(field.NewPath("spec", "provider"), bucket.Spec.Provider, "referenced BucketProvider not found")
+		}
+		return err
 	}
 	if err := validateTemplate(bucket.Spec.SecretTemplate); err != nil {
 		return field.Invalid(field.NewPath("spec", "secretTemplate"), bucket.Spec.SecretTemplate, err.Error())

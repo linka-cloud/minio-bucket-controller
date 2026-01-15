@@ -125,6 +125,7 @@ $(LOCALBIN):
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
+KUBEBUILDER ?= $(LOCALBIN)/kubebuilder
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v3.8.7
@@ -154,5 +155,5 @@ $(ENVTEST): $(LOCALBIN)
 .PHONY: kubebuilder
 kubebuilder: $(KUBEBUILDER) ## Download kubebuilder locally if necessary.
 $(KUBEBUILDER): $(LOCALBIN)
-	test -s $(LOCALBIN)/kubebuilder || { curl -L https://go.kubebuilder.io/dl/latest/$(shell go env GOOS)/$(shell go env GOARCH) | tar -xz -C $(LOCALBIN); mv $(LOCALBIN)/kubebuilder_*_$(shell go env GOOS)_$(shell go env GOARCH) $(LOCALBIN)/kubebuilder; }
+	test -s $(LOCALBIN)/kubebuilder || { curl -L https://github.com/kubernetes-sigs/kubebuilder/releases/download/v3.15.1/kubebuilder_$(shell go env GOOS)_$(shell go env GOARCH) > $(KUBEBUILDER); chmod +x $(KUBEBUILDER); }
 

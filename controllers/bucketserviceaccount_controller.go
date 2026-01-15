@@ -29,13 +29,14 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	s3v1alpha1 "go.linka.cloud/minio-bucket-controller/api/v1alpha1"
-	"go.linka.cloud/minio-bucket-controller/pkg/mc"
+	mc2 "go.linka.cloud/minio-bucket-controller/pkg/mc"
 	"go.linka.cloud/minio-bucket-controller/pkg/recorder"
 )
 
@@ -48,7 +49,6 @@ const (
 type BucketServiceAccountReconciler struct {
 	client.Client
 	Scheme         *runtime.Scheme
-	MC             *mc.Client
 	Rec            recorder.Recorder
 	ServiceAccount string
 }
@@ -99,15 +99,27 @@ func (r *BucketServiceAccountReconciler) Reconcile(ctx context.Context, req ctrl
 		}
 	}
 
-	if re, ok, err := r.reconcileUser(ctx, &a); !ok {
+	var p s3v1alpha1.BucketProvider
+	if err := r.Get(ctx, types.NamespacedName{Name: a.Spec.Provider}, &p); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, r.err(&a, fmt.Errorf("referenced bucket provider %s not found", a.Spec.Provider), s3v1alpha1.ErrProviderInvalid)
+		}
+		return ctrl.Result{}, err
+	}
+	mc, err := newClient(ctx, r.Client, p)
+	if err != nil {
+		return ctrl.Result{}, r.err(&a, fmt.Errorf("unable to create minio client: %w", err), s3v1alpha1.ErrProviderInvalid)
+	}
+
+	if re, ok, err := r.reconcileUser(ctx, mc, &a); !ok {
 		return re, r.err(&a, err, s3v1alpha1.BucketSAConditionReasonErrCreateUser)
 	}
 
-	if re, ok, err := r.reconcileServiceAccount(ctx, &a); !ok {
+	if re, ok, err := r.reconcileServiceAccount(ctx, mc, &a); !ok {
 		return re, r.err(&a, err, s3v1alpha1.BucketSAConditionReasonErrCreateAccount)
 	}
 
-	if re, ok, err := r.reconcilePolicies(ctx, &a); !ok {
+	if re, ok, err := r.reconcilePolicies(ctx, mc, &a); !ok {
 		return re, r.err(&a, err, s3v1alpha1.BucketSAConditionReasonErrCreatePolicy)
 	}
 
@@ -131,11 +143,11 @@ func (r *BucketServiceAccountReconciler) Reconcile(ctx context.Context, req ctrl
 	return ctrl.Result{}, nil
 }
 
-func (r *BucketServiceAccountReconciler) reconcileUser(ctx context.Context, a *s3v1alpha1.BucketServiceAccount) (ctrl.Result, bool, error) {
+func (r *BucketServiceAccountReconciler) reconcileUser(ctx context.Context, mc *mc2.Client, a *s3v1alpha1.BucketServiceAccount) (ctrl.Result, bool, error) {
 	name := name(a.Name)
 	log := log.FromContext(ctx).WithValues("user", name)
 	log.Info("reconciling user")
-	us, err := r.MC.ListUsers(ctx)
+	us, err := mc.ListUsers(ctx)
 	if err != nil {
 		return ctrl.Result{}, false, fmt.Errorf("unable to list users: %w", err)
 	}
@@ -143,14 +155,14 @@ func (r *BucketServiceAccountReconciler) reconcileUser(ctx context.Context, a *s
 		return ctrl.Result{}, true, nil
 	}
 	log.Info("creating user")
-	if err := r.MC.AddUser(ctx, name, mc.GeneratePassword()); err != nil {
+	if err := mc.AddUser(ctx, name, mc2.GeneratePassword()); err != nil {
 		return ctrl.Result{}, false, fmt.Errorf("unable to create user: %w", err)
 	}
 	r.Rec.Eventf(a, "UserCreated", "User %s created", name)
 	return ctrl.Result{}, true, nil
 }
 
-func (r *BucketServiceAccountReconciler) reconcileServiceAccount(ctx context.Context, a *s3v1alpha1.BucketServiceAccount) (ctrl.Result, bool, error) {
+func (r *BucketServiceAccountReconciler) reconcileServiceAccount(ctx context.Context, mc *mc2.Client, a *s3v1alpha1.BucketServiceAccount) (ctrl.Result, bool, error) {
 	log := log.FromContext(ctx)
 	log.Info("reconciling service account")
 	name := name(a.Name)
@@ -172,7 +184,7 @@ func (r *BucketServiceAccountReconciler) reconcileServiceAccount(ctx context.Con
 	} else {
 		return ctrl.Result{}, true, nil
 	}
-	res, err := r.MC.ListServiceAccounts(ctx, name)
+	res, err := mc.ListServiceAccounts(ctx, name)
 	if err != nil {
 		return ctrl.Result{}, false, fmt.Errorf("unable to list service accounts: %w", err)
 	}
@@ -180,13 +192,13 @@ func (r *BucketServiceAccountReconciler) reconcileServiceAccount(ctx context.Con
 		log.Info("service account already exists")
 		for _, v := range res.Accounts {
 			log.Info("deleting service account %s", v)
-			if err := r.MC.DeleteServiceAccount(ctx, v); err != nil {
+			if err := mc.DeleteServiceAccount(ctx, v); err != nil {
 				return ctrl.Result{}, false, fmt.Errorf("unable to remove service account: %w", err)
 			}
 		}
 	}
 	log.Info("creating service account")
-	creds, err := r.MC.AddServiceAccount(ctx, madmin.AddServiceAccountReq{TargetUser: name})
+	creds, err := mc.AddServiceAccount(ctx, madmin.AddServiceAccountReq{TargetUser: name})
 	if err != nil {
 		return ctrl.Result{}, false, fmt.Errorf("unable to create service account: %w", err)
 	}
@@ -199,19 +211,19 @@ func (r *BucketServiceAccountReconciler) reconcileServiceAccount(ctx context.Con
 	}
 	log.Info("creating secret")
 	if err := r.Create(ctx, s); err != nil {
-		return ctrl.Result{}, false, multierr.Combine(fmt.Errorf("unable to create secret: %w", err), r.MC.DeleteServiceAccount(ctx, name))
+		return ctrl.Result{}, false, multierr.Combine(fmt.Errorf("unable to create secret: %w", err), mc.DeleteServiceAccount(ctx, name))
 	}
 	s.GetObjectMeta()
 	a.Status.SecretName = &s.Name
 	log.Info("updating bucket status")
 	if err := r.Status().Update(ctx, a); err != nil {
-		return ctrl.Result{}, false, multierr.Combine(fmt.Errorf("unable to update bucket status: %w", err), r.Delete(ctx, s), r.MC.DeleteServiceAccount(ctx, name))
+		return ctrl.Result{}, false, multierr.Combine(fmt.Errorf("unable to update bucket status: %w", err), r.Delete(ctx, s), mc.DeleteServiceAccount(ctx, name))
 	}
 	r.Rec.Eventf(a, "SecretCreated", "Secret %s created", s.Name)
 	return ctrl.Result{}, false, nil
 }
 
-func (r *BucketServiceAccountReconciler) reconcilePolicies(ctx context.Context, a *s3v1alpha1.BucketServiceAccount) (ctrl.Result, bool, error) {
+func (r *BucketServiceAccountReconciler) reconcilePolicies(ctx context.Context, mc *mc2.Client, a *s3v1alpha1.BucketServiceAccount) (ctrl.Result, bool, error) {
 	log := log.FromContext(ctx)
 	var buckets s3v1alpha1.BucketList
 	if err := r.List(ctx, &buckets, client.MatchingFields{ownerKey: a.Name}); err != nil {
@@ -242,13 +254,13 @@ func (r *BucketServiceAccountReconciler) reconcilePolicies(ctx context.Context, 
 	}
 	var policies []string
 	for _, b := range buckets.Items {
-		if re, ok, err := r.reconcilePolicy(ctx, &b); !ok {
+		if re, ok, err := r.reconcilePolicy(ctx, mc, &b); !ok {
 			return re, false, err
 		}
 		policies = append(policies, name(b.Name))
 	}
 	want := strings.Join(policies, ",")
-	// u, err := r.MC.GetUserInfo(ctx, name(a.Name))
+	// u, err := mc.GetUserInfo(ctx, name(a.Name))
 	// if err != nil {
 	// 	return ctrl.Result{}, false, fmt.Errorf("unable to get user info: %w", err)
 	// }
@@ -256,19 +268,19 @@ func (r *BucketServiceAccountReconciler) reconcilePolicies(ctx context.Context, 
 	// 	return ctrl.Result{}, true, nil
 	// }
 	log.Info("assigning policy")
-	if err := r.MC.SetPolicy(ctx, want, name(a.Name), false); err != nil {
+	if err := mc.SetPolicy(ctx, want, name(a.Name), false); err != nil {
 		return ctrl.Result{}, false, fmt.Errorf("unable to set policy: %w", err)
 	}
 	r.Rec.Eventf(a, "PolicyConfigured", "Policy %s configured", name(a.Name))
 	return ctrl.Result{}, true, nil
 }
 
-func (r *BucketServiceAccountReconciler) reconcilePolicy(ctx context.Context, bucket *s3v1alpha1.Bucket) (ctrl.Result, bool, error) {
+func (r *BucketServiceAccountReconciler) reconcilePolicy(ctx context.Context, mc *mc2.Client, bucket *s3v1alpha1.Bucket) (ctrl.Result, bool, error) {
 	name := name(bucket.Name)
 	log := ctrl.LoggerFrom(ctx).WithValues("policy", name)
 	log.Info("reconciling policy")
-	want := mc.Policy(bucket.Name)
-	ps, err := r.MC.ListCannedPolicies(ctx)
+	want := mc2.Policy(bucket.Name)
+	ps, err := mc.ListCannedPolicies(ctx)
 	if err != nil {
 		return ctrl.Result{}, false, fmt.Errorf("unable to list policies: %w", err)
 	}
@@ -285,7 +297,7 @@ func (r *BucketServiceAccountReconciler) reconcilePolicy(ctx context.Context, bu
 	} else {
 		log.Info("creating policy")
 	}
-	if err := r.MC.AddCannedPolicy(ctx, name, want); err != nil {
+	if err := mc.AddCannedPolicy(ctx, name, want); err != nil {
 		return ctrl.Result{}, false, fmt.Errorf("unable to add policy: %w", err)
 	}
 	return ctrl.Result{}, true, nil
@@ -310,6 +322,19 @@ func (r *BucketServiceAccountReconciler) reconcileDeletion(ctx context.Context, 
 		return ctrl.Result{}, false, nil
 	}
 
+	var p s3v1alpha1.BucketProvider
+	if err := r.Get(ctx, types.NamespacedName{Name: a.Spec.Provider}, &p); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Info("bucket provider not found, skipping account deletion")
+			return ctrl.Result{}, true, nil
+		}
+		return ctrl.Result{}, false, fmt.Errorf("unable to get bucket provider: %w", err)
+	}
+	mc, err := newClient(ctx, r.Client, p)
+	if err != nil {
+		return ctrl.Result{}, false, fmt.Errorf("unable to create minio client: %w", err)
+	}
+
 	s := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      a.Name + saSecretSuffix,
@@ -322,7 +347,7 @@ func (r *BucketServiceAccountReconciler) reconcileDeletion(ctx context.Context, 
 		}
 	}
 
-	if err := r.MC.RemoveUser(ctx, name(a.Name)); err != nil {
+	if err := mc.RemoveUser(ctx, name(a.Name)); err != nil {
 		if madmin.ToErrorResponse(err).Code == "XMinioAdminNoSuchUser" {
 			return ctrl.Result{}, true, nil
 		}
@@ -352,7 +377,7 @@ func (r *BucketServiceAccountReconciler) err(a *s3v1alpha1.BucketServiceAccount,
 		LastTransitionTime: metav1.Now(),
 	})
 	a.Status.Phase = s3v1alpha1.BucketConditionError
-	if err2 := r.Status().Update(context.Background(), a); err != nil {
+	if err2 := r.Status().Update(context.Background(), a); err2 != nil {
 		return multierr.Combine(err, err2)
 	}
 	r.Rec.Warn(a, "BucketError", err.Error())
@@ -373,7 +398,7 @@ func (r *BucketServiceAccountReconciler) gc(ctx context.Context, freq, ttl time.
 			log := log.WithValues("namespace", v.Namespace, "name", v.Name)
 			var found bool
 			for _, v := range v.Status.Conditions {
-				found = v.Type == s3v1alpha1.BucketSAConditionDeletionPending
+				found = v.Type == s3v1alpha1.BucketSAConditionDeletionPending || v.Type == s3v1alpha1.BucketSAConditionDeleting
 				if found && v.LastTransitionTime.Add(ttl).After(time.Now()) {
 					continue iter
 				}
@@ -382,17 +407,19 @@ func (r *BucketServiceAccountReconciler) gc(ctx context.Context, freq, ttl time.
 				continue
 			}
 			log.Info("garbage collection: deleting BucketServiceAccount")
-			meta.SetStatusCondition(&v.Status.Conditions, metav1.Condition{
-				Type:               s3v1alpha1.BucketSAConditionDeleting,
-				Status:             metav1.ConditionTrue,
-				Reason:             "BucketServiceAccountDeletion",
-				Message:            "BucketServiceAccount is being deleted",
-				ObservedGeneration: v.Generation,
-			})
-			v.Status.Phase = s3v1alpha1.BucketConditionDeleting
-			if err := r.Status().Update(ctx, &v); err != nil {
-				log.Error(err, "unable to update BucketServiceAccount")
-				continue
+			if !meta.IsStatusConditionTrue(v.Status.Conditions, s3v1alpha1.BucketSAConditionDeleting) {
+				meta.SetStatusCondition(&v.Status.Conditions, metav1.Condition{
+					Type:               s3v1alpha1.BucketSAConditionDeleting,
+					Status:             metav1.ConditionTrue,
+					Reason:             "BucketServiceAccountDeletion",
+					Message:            "BucketServiceAccount is being deleted",
+					ObservedGeneration: v.Generation,
+				})
+				v.Status.Phase = s3v1alpha1.BucketConditionDeleting
+				if err := r.Status().Update(ctx, &v); err != nil {
+					log.Error(err, "unable to update BucketServiceAccount")
+					continue
+				}
 			}
 			if err := r.Delete(ctx, &v); err != nil && !apierrors.IsNotFound(err) {
 				log.Error(err, "unable to delete BucketServiceAccount")
