@@ -20,81 +20,81 @@ import (
 
 var _ webhook.CustomValidator = (*BucketServiceAccountReconciler)(nil)
 
-func (r *BucketServiceAccountReconciler) ValidateCreate(ctx context.Context, obj runtime.Object) error {
+func (r *BucketServiceAccountReconciler) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	o, ok := any(obj).(metav1.ObjectMetaAccessor)
 	if !ok {
-		return apierrors.NewBadRequest(fmt.Sprintf("expected a BucketServiceAccount but got a %T", obj))
+		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a BucketServiceAccount but got a %T", obj))
 	}
 	log := log2.FromContext(ctx)
 	// TODO(adphi): check if bucket already exists
 	req, err := admission.RequestFromContext(ctx)
 	if err != nil {
-		return apierrors.NewInternalError(err)
+		return nil, apierrors.NewInternalError(err)
 	}
 	if !r.allowed(req.UserInfo.Username) {
-		return apierrors.NewForbidden(s3v1alpha1.GroupVersion.WithResource("bucketserviceaccounts").GroupResource(), o.GetObjectMeta().GetName(), fmt.Errorf("user %s is not allowed to create service account", req.UserInfo.Username))
+		return nil, apierrors.NewForbidden(s3v1alpha1.GroupVersion.WithResource("bucketserviceaccounts").GroupResource(), o.GetObjectMeta().GetName(), fmt.Errorf("user %s is not allowed to create service account", req.UserInfo.Username))
 	}
 	switch o := o.(type) {
 	case *s3v1alpha1.BucketServiceAccount:
 		log.Info("validate create", "user", req.UserInfo.Username)
 		if o.Spec.Provider == "" {
-			return apierrors.NewBadRequest("provider is required")
+			return nil, apierrors.NewBadRequest("provider is required")
 		}
 		var p s3v1alpha1.BucketProvider
 		if err := r.Get(ctx, types.NamespacedName{Name: o.Spec.Provider}, &p); err != nil {
 			if apierrors.IsNotFound(err) {
-				return apierrors.NewNotFound(s3v1alpha1.GroupVersion.WithResource("bucketproviders").GroupResource(), o.Spec.Provider)
+				return nil, apierrors.NewNotFound(s3v1alpha1.GroupVersion.WithResource("bucketproviders").GroupResource(), o.Spec.Provider)
 			}
-			return err
+			return nil, err
 		}
 		mc, err := newClient(ctx, r.Client, p)
 		if err != nil {
-			return apierrors.NewInternalError(fmt.Errorf("unable to create minio client: %w", err))
+			return nil, apierrors.NewInternalError(fmt.Errorf("unable to create minio client: %w", err))
 		}
 		us, err := mc.ListUsers(ctx)
 		if err != nil {
-			return apierrors.NewInternalError(fmt.Errorf("unable to list users: %w", err))
+			return nil, apierrors.NewInternalError(fmt.Errorf("unable to list users: %w", err))
 		}
 		if _, ok := us[prefix+o.GetObjectMeta().GetName()]; ok {
-			return apierrors.NewConflict(s3v1alpha1.GroupVersion.WithResource("bucketserviceaccounts").GroupResource(), o.Name, fmt.Errorf("account already exists"))
+			return nil, apierrors.NewConflict(s3v1alpha1.GroupVersion.WithResource("bucketserviceaccounts").GroupResource(), o.Name, fmt.Errorf("account already exists"))
 		}
-		return nil
+		return nil, nil
 	case *corev1.Secret:
-		return nil
+		return nil, nil
 	default:
-		return apierrors.NewBadRequest(fmt.Sprintf("expected a BucketServiceAccount or a Secret but got a %T", obj))
+		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a BucketServiceAccount or a Secret but got a %T", obj))
 	}
 }
 
-func (r *BucketServiceAccountReconciler) ValidateUpdate(ctx context.Context, o, n runtime.Object) error {
+func (r *BucketServiceAccountReconciler) ValidateUpdate(ctx context.Context, o, n runtime.Object) (admission.Warnings, error) {
 	a, ok := any(n).(metav1.ObjectMetaAccessor)
 	if !ok {
-		return apierrors.NewBadRequest(fmt.Sprintf("expected a BucketServiceAccount but got a %T", o))
+		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a BucketServiceAccount but got a %T", o))
 	}
 	req, err := admission.RequestFromContext(ctx)
 	if err != nil {
-		return apierrors.NewInternalError(err)
+		return nil, apierrors.NewInternalError(err)
 	}
 	if !r.allowed(req.UserInfo.Username) {
-		return apierrors.NewForbidden(s3v1alpha1.GroupVersion.WithResource("bucketserviceaccounts").GroupResource(), a.GetObjectMeta().GetName(), fmt.Errorf("user %s is not allowed to update bucket service account", req.UserInfo.Username))
+		return nil, apierrors.NewForbidden(s3v1alpha1.GroupVersion.WithResource("bucketserviceaccounts").GroupResource(), a.GetObjectMeta().GetName(), fmt.Errorf("user %s is not allowed to update bucket service account", req.UserInfo.Username))
 	}
-	return nil
+	return nil, nil
 }
 
-func (r *BucketServiceAccountReconciler) ValidateDelete(ctx context.Context, obj runtime.Object) error {
+func (r *BucketServiceAccountReconciler) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	a, ok := any(obj).(metav1.ObjectMetaAccessor)
 	if !ok {
-		return apierrors.NewBadRequest(fmt.Sprintf("expected a BucketServiceAccount but got a %T", obj))
+		return nil, apierrors.NewBadRequest(fmt.Sprintf("expected a BucketServiceAccount but got a %T", obj))
 	}
 	a.GetObjectMeta().GetName()
 	req, err := admission.RequestFromContext(ctx)
 	if err != nil {
-		return apierrors.NewInternalError(err)
+		return nil, apierrors.NewInternalError(err)
 	}
 	if !r.allowed(req.UserInfo.Username) {
-		return apierrors.NewForbidden(s3v1alpha1.GroupVersion.WithResource("bucketserviceaccounts").GroupResource(), a.GetObjectMeta().GetName(), fmt.Errorf("user %s is not allowed to deleta bucket service account", req.UserInfo.Username))
+		return nil, apierrors.NewForbidden(s3v1alpha1.GroupVersion.WithResource("bucketserviceaccounts").GroupResource(), a.GetObjectMeta().GetName(), fmt.Errorf("user %s is not allowed to deleta bucket service account", req.UserInfo.Username))
 	}
-	return nil
+	return nil, nil
 }
 
 // +kubebuilder:webhook:path=/validate-s3-linka-cloud-v1alpha1-bucketserviceaccount,mutating=false,failurePolicy=fail,sideEffects=None,groups=s3.linka.cloud,resources=bucketserviceaccounts,verbs=create;update;delete,versions=v1alpha1,name=vbucketserviceaccount.kb.io,admissionReviewVersions=v1

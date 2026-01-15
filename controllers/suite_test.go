@@ -24,9 +24,10 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"go.linka.cloud/grpc/logger"
+	"go.linka.cloud/grpc-toolkit/logger"
 	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	"dagger.io/dagger"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -126,10 +127,12 @@ var _ = BeforeSuite(func() {
 	Expect(k8sClient).NotTo(BeNil())
 
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
-		Scheme:                        scheme.Scheme,
-		Host:                          testEnv.WebhookInstallOptions.LocalServingHost,
-		Port:                          testEnv.WebhookInstallOptions.LocalServingPort,
-		CertDir:                       testEnv.WebhookInstallOptions.LocalServingCertDir,
+		Scheme: scheme.Scheme,
+		WebhookServer: webhook.NewServer(webhook.Options{
+			Host:    testEnv.WebhookInstallOptions.LocalServingHost,
+			Port:    testEnv.WebhookInstallOptions.LocalServingPort,
+			CertDir: testEnv.WebhookInstallOptions.LocalServingCertDir,
+		}),
 		LeaderElectionID:              "58e2baca.linka.cloud",
 		LeaderElectionReleaseOnCancel: true,
 	})

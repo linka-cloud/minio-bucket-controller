@@ -25,16 +25,18 @@ import (
 	"os"
 	"strings"
 
-	"go.linka.cloud/grpc/logger"
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"go.linka.cloud/grpc-toolkit/logger"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	s3v1alpha1 "go.linka.cloud/minio-bucket-controller/api/v1alpha1"
 	"go.linka.cloud/minio-bucket-controller/controllers"
@@ -118,13 +120,17 @@ func main() {
 	}
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:                        scheme,
-		MetricsBindAddress:            metricsAddr,
-		Port:                          9443,
 		HealthProbeBindAddress:        probeAddr,
-		CertDir:                       certs,
 		LeaderElection:                enableLeaderElection,
 		LeaderElectionID:              "58e2baca.linka.cloud",
 		LeaderElectionReleaseOnCancel: true,
+		WebhookServer: webhook.NewServer(webhook.Options{
+			Port:    9443,
+			CertDir: certs,
+		}),
+		Metrics: metricsserver.Options{
+			BindAddress: metricsAddr,
+		},
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")

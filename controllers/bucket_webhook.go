@@ -12,6 +12,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	s3v1alpha1 "go.linka.cloud/minio-bucket-controller/api/v1alpha1"
 )
@@ -50,51 +51,51 @@ func (r *BucketReconciler) Default(ctx context.Context, obj runtime.Object) erro
 	return nil
 }
 
-func (r *BucketReconciler) ValidateCreate(ctx context.Context, obj runtime.Object) error {
+func (r *BucketReconciler) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	bucket, ok := obj.(*s3v1alpha1.Bucket)
 	if !ok {
-		return fmt.Errorf("expected a Bucket but got a %T", obj)
+		return nil, fmt.Errorf("expected a Bucket but got a %T", obj)
 	}
 	var p s3v1alpha1.BucketProvider
 	if err := r.Get(ctx, client.ObjectKey{Name: bucket.Spec.Provider}, &p); err != nil {
 		if apierrors.IsNotFound(err) {
-			return field.Invalid(field.NewPath("spec", "provider"), bucket.Spec.Provider, "referenced BucketProvider not found")
+			return nil, field.Invalid(field.NewPath("spec", "provider"), bucket.Spec.Provider, "referenced BucketProvider not found")
 		}
-		return err
+		return nil, err
 	}
-	if err := validateTemplate(bucket.Spec.SecretTemplate); err != nil {
-		return field.Invalid(field.NewPath("spec", "secretTemplate"), bucket.Spec.SecretTemplate, err.Error())
+	if w, err := validateTemplate(bucket.Spec.SecretTemplate); err != nil {
+		return w, field.Invalid(field.NewPath("spec", "secretTemplate"), bucket.Spec.SecretTemplate, err.Error())
 	}
-	return nil
+	return nil, nil
 }
 
-func (r *BucketReconciler) ValidateUpdate(ctx context.Context, o, n runtime.Object) error {
+func (r *BucketReconciler) ValidateUpdate(ctx context.Context, o, n runtime.Object) (admission.Warnings, error) {
 	old, ok := o.(*s3v1alpha1.Bucket)
 	if !ok {
-		return fmt.Errorf("expected a Bucket but got a %T", o)
+		return nil, fmt.Errorf("expected a Bucket but got a %T", o)
 	}
 	bucket, ok := n.(*s3v1alpha1.Bucket)
 	if !ok {
-		return fmt.Errorf("expected a Bucket but got a %T", n)
+		return nil, fmt.Errorf("expected a Bucket but got a %T", n)
 	}
 	if old.Spec.Provider != "" && old.Spec.Provider != bucket.Spec.Provider {
-		return field.Invalid(field.NewPath("spec", "provider"), bucket.Spec.Provider, "cannot change provider once set")
+		return nil, field.Invalid(field.NewPath("spec", "provider"), bucket.Spec.Provider, "cannot change provider once set")
 	}
 	var p s3v1alpha1.BucketProvider
 	if err := r.Get(ctx, client.ObjectKey{Name: bucket.Spec.Provider}, &p); err != nil {
 		if apierrors.IsNotFound(err) {
-			return field.Invalid(field.NewPath("spec", "provider"), bucket.Spec.Provider, "referenced BucketProvider not found")
+			return nil, field.Invalid(field.NewPath("spec", "provider"), bucket.Spec.Provider, "referenced BucketProvider not found")
 		}
-		return err
+		return nil, err
 	}
-	if err := validateTemplate(bucket.Spec.SecretTemplate); err != nil {
-		return field.Invalid(field.NewPath("spec", "secretTemplate"), bucket.Spec.SecretTemplate, err.Error())
+	if w, err := validateTemplate(bucket.Spec.SecretTemplate); err != nil {
+		return w, field.Invalid(field.NewPath("spec", "secretTemplate"), bucket.Spec.SecretTemplate, err.Error())
 	}
-	return nil
+	return nil, nil
 }
 
-func (r *BucketReconciler) ValidateDelete(ctx context.Context, obj runtime.Object) error {
-	return nil
+func (r *BucketReconciler) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	return nil, nil
 }
 
 // +kubebuilder:webhook:path=/mutate-s3-linka-cloud-v1alpha1-bucket,mutating=true,failurePolicy=fail,sideEffects=None,groups=s3.linka.cloud,resources=buckets,verbs=create;update,versions=v1alpha1,name=mbucket.kb.io,admissionReviewVersions=v1
@@ -109,21 +110,21 @@ func (r *BucketReconciler) SetupWebhookWithManager(_ context.Context, mgr ctrl.M
 		Complete()
 }
 
-func validateTemplate(m map[string]string) error {
+func validateTemplate(m map[string]string) (admission.Warnings, error) {
 	for _, v := range []string{s3v1alpha1.MinioAccessKey, s3v1alpha1.MinioSecretKey, s3v1alpha1.MinioEndpoint, s3v1alpha1.MinioBucket, s3v1alpha1.MinioSecure} {
 		if _, ok := m[v]; ok {
-			return fmt.Errorf("cannot contain %s", v)
+			return nil, fmt.Errorf("cannot contain %s", v)
 		}
 	}
 	for k, v := range m {
 		tmp, err := template.New("secret").Parse(v)
 		if err != nil {
-			return fmt.Errorf("%s: unable to parse secret template: %w", k, err)
+			return nil, fmt.Errorf("%s: unable to parse secret template: %w", k, err)
 		}
 		var buf bytes.Buffer
 		if err := tmp.Execute(&buf, s3v1alpha1.BucketAccess{}); err != nil {
-			return fmt.Errorf("%s: unable to execute secret template: %w", k, err)
+			return nil, fmt.Errorf("%s: unable to execute secret template: %w", k, err)
 		}
 	}
-	return nil
+	return nil, nil
 }
