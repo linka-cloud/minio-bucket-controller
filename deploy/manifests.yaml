@@ -755,9 +755,6 @@ spec:
       containers:
       - args:
         - --leader-elect
-        envFrom:
-        - secretRef:
-            name: minio-bucket-controller-credentials
         image: linkacloud/minio-bucket-controller:latest
         imagePullPolicy: Always
         livenessProbe:
